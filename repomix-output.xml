@@ -1,0 +1,5024 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+backend/
+  app/
+    models/
+      __init__.py
+    routes/
+      __init__.py
+      analytics.py
+      listings.py
+    utils/
+      __init__.py
+    __init__.py
+    config.py
+    database.py
+  data/
+    processed/
+      .gitkeep
+    __init__.py
+    config.py
+    data_cleaner.py
+    etl_pipeline.py
+    mongodb_loader.py
+    utils.py
+  ml/
+    models/
+      .gitkeep
+    __init__.py
+    add_sentiment_to_db.py
+    sentiment_analyzer.py
+  tests/
+    __init__.py
+  requirements.txt
+  run.py
+  test_cleaning.py
+  test_mongo_query.py
+  test_mongodb.py
+  test_setup.py
+frontend/
+  css/
+    style.css
+  js/
+    api.js
+    app.js
+    charts.js
+    map.js
+  index.html
+.gitignore
+API_EXAMPLES.md
+QUICK_START.md
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/app/models/__init__.py">
+
+</file>
+
+<file path="backend/app/routes/__init__.py">
+
+</file>
+
+<file path="backend/app/routes/analytics.py">
+"""
+Analytics API endpoints - Price stats, sentiment, occupancy, etc.
+"""
+
+from flask import Blueprint, jsonify, request
+from ..database import get_db
+from collections import Counter
+
+bp = Blueprint('analytics', __name__, url_prefix='/api/analytics')
+
+
+@bp.route('/<city>/price-stats')
+def get_price_stats(city):
+    """
+    Get price statistics overall and by neighbourhood.
+    """
+    db = get_db()
+    
+    # Overall average price
+    overall_pipeline = [
+        {'$match': {'city': city, 'price': {'$exists': True, '$ne': None}}},
+        {'$group': {
+            '_id': None,
+            'avg_price': {'$avg': '$price'},
+            'min_price': {'$min': '$price'},
+            'max_price': {'$max': '$price'},
+            'count': {'$sum': 1}
+        }}
+    ]
+    
+    overall = list(db.listings.aggregate(overall_pipeline))
+    
+    # By neighbourhood
+    by_neighbourhood_pipeline = [
+        {'$match': {'city': city, 'price': {'$exists': True, '$ne': None}}},
+        {'$group': {
+            '_id': '$neighbourhood_cleansed',
+            'avg_price': {'$avg': '$price'},
+            'min_price': {'$min': '$price'},
+            'max_price': {'$max': '$price'},
+            'count': {'$sum': 1}
+        }},
+        {'$sort': {'avg_price': -1}}
+    ]
+    
+    by_neighbourhood = list(db.listings.aggregate(by_neighbourhood_pipeline))
+    
+    return jsonify({
+        'city': city,
+        'overall': overall[0] if overall else {},
+        'by_neighbourhood': by_neighbourhood
+    })
+
+
+@bp.route('/<city>/room-type-distribution')
+def get_room_type_distribution(city):
+    """
+    Get distribution of room types.
+    """
+    db = get_db()
+    
+    pipeline = [
+        {'$match': {'city': city}},
+        {'$group': {
+            '_id': '$room_type',
+            'count': {'$sum': 1},
+            'avg_price': {'$avg': '$price'}
+        }},
+        {'$sort': {'count': -1}}
+    ]
+    
+    results = list(db.listings.aggregate(pipeline))
+    
+    total = sum(r['count'] for r in results)
+    
+    # Add percentages
+    for r in results:
+        r['percentage'] = round((r['count'] / total * 100), 1) if total > 0 else 0
+    
+    return jsonify({
+        'city': city,
+        'total_listings': total,
+        'distribution': results
+    })
+
+
+@bp.route('/<city>/occupancy')
+def get_occupancy_stats(city):
+    """
+    Get occupancy statistics from calendar data.
+    Note: This endpoint might be slow if calendar data is large.
+    """
+    db = get_db()
+    
+    # Get occupancy by month
+    pipeline = [
+        {'$match': {'city': city}},
+        {'$group': {
+            '_id': {
+                '$dateToString': {
+                    'format': '%Y-%m',
+                    'date': '$date'
+                }
+            },
+            'total_days': {'$sum': 1},
+            'booked_days': {
+                '$sum': {
+                    '$cond': [{'$eq': ['$available', False]}, 1, 0]
+                }
+            }
+        }},
+        {'$sort': {'_id': 1}},
+        {'$limit': 12}  # Last 12 months
+    ]
+    
+    results = list(db.calendar.aggregate(pipeline))
+    
+    # Calculate occupancy percentage
+    for r in results:
+        r['occupancy_rate'] = round((r['booked_days'] / r['total_days'] * 100), 1) if r['total_days'] > 0 else 0
+    
+    return jsonify({
+        'city': city,
+        'by_month': results
+    })
+
+
+@bp.route('/<city>/top-hosts')
+def get_top_hosts(city):
+    """
+    Get top hosts by number of listings.
+    """
+    db = get_db()
+    
+    limit = request.args.get('limit', default=10, type=int)
+    
+    pipeline = [
+        {'$match': {'city': city}},
+        {'$group': {
+            '_id': '$host_id',
+            'host_name': {'$first': '$host_name'},
+            'listing_count': {'$sum': 1},
+            'avg_price': {'$avg': '$price'},
+            'avg_rating': {'$avg': '$review_scores_rating'}
+        }},
+        {'$sort': {'listing_count': -1}},
+        {'$limit': limit}
+    ]
+    
+    results = list(db.listings.aggregate(pipeline))
+    
+    return jsonify({
+        'city': city,
+        'top_hosts': results
+    })
+
+
+@bp.route('/<city>/sentiment')
+def get_sentiment_overall(city):
+    """
+    Get overall sentiment statistics for a city.
+    """
+    db = get_db()
+    
+    pipeline = [
+        {'$match': {'city': city, 'sentiment': {'$exists': True}}},
+        {'$group': {
+            '_id': '$sentiment',
+            'count': {'$sum': 1},
+            'avg_score': {'$avg': '$sentiment_score'}
+        }}
+    ]
+    
+    results = list(db.reviews.aggregate(pipeline))
+    
+    sentiment_data = {
+        'positive': {'count': 0, 'percentage': 0, 'avg_score': 0},
+        'neutral': {'count': 0, 'percentage': 0, 'avg_score': 0},
+        'negative': {'count': 0, 'percentage': 0, 'avg_score': 0}
+    }
+    
+    total = sum(r['count'] for r in results)
+    
+    for r in results:
+        sentiment = r['_id']
+        count = r['count']
+        sentiment_data[sentiment] = {
+            'count': count,
+            'percentage': round((count / total * 100), 1) if total > 0 else 0,
+            'avg_score': round(r['avg_score'], 3)
+        }
+    
+    return jsonify({
+        'city': city,
+        'total_reviews': total,
+        'sentiment': sentiment_data
+    })
+
+
+@bp.route('/<city>/sentiment/by-neighbourhood')
+def get_sentiment_by_neighbourhood(city):
+    """
+    Get sentiment breakdown by neighbourhood.
+    """
+    db = get_db()
+    
+    # First, get listing_id to neighbourhood mapping
+    listing_neighbourhood_map = {}
+    for listing in db.listings.find({'city': city}, {'id': 1, 'neighbourhood_cleansed': 1}):
+        listing_neighbourhood_map[listing['id']] = listing.get('neighbourhood_cleansed')
+    
+    # Get all reviews with sentiment
+    reviews = db.reviews.find(
+        {'city': city, 'sentiment': {'$exists': True}},
+        {'listing_id': 1, 'sentiment': 1, 'sentiment_score': 1}
+    )
+    
+    # Aggregate by neighbourhood
+    neighbourhood_sentiments = {}
+    
+    for review in reviews:
+        listing_id = review['listing_id']
+        neighbourhood = listing_neighbourhood_map.get(listing_id)
+        
+        if not neighbourhood:
+            continue
+        
+        if neighbourhood not in neighbourhood_sentiments:
+            neighbourhood_sentiments[neighbourhood] = {
+                'positive': 0,
+                'neutral': 0,
+                'negative': 0,
+                'scores': []
+            }
+        
+        sentiment = review['sentiment']
+        neighbourhood_sentiments[neighbourhood][sentiment] += 1
+        neighbourhood_sentiments[neighbourhood]['scores'].append(review.get('sentiment_score', 0))
+    
+    # Calculate statistics
+    result = []
+    for neighbourhood, data in neighbourhood_sentiments.items():
+        total = data['positive'] + data['neutral'] + data['negative']
+        avg_score = sum(data['scores']) / len(data['scores']) if data['scores'] else 0
+        
+        result.append({
+            'neighbourhood': neighbourhood,
+            'total_reviews': total,
+            'positive': data['positive'],
+            'positive_pct': round((data['positive'] / total * 100), 1) if total > 0 else 0,
+            'neutral': data['neutral'],
+            'neutral_pct': round((data['neutral'] / total * 100), 1) if total > 0 else 0,
+            'negative': data['negative'],
+            'negative_pct': round((data['negative'] / total * 100), 1) if total > 0 else 0,
+            'avg_sentiment_score': round(avg_score, 3)
+        })
+    
+    # Sort by positive percentage
+    result.sort(key=lambda x: x['positive_pct'], reverse=True)
+    
+    return jsonify({
+        'city': city,
+        'neighbourhoods': result
+    })
+
+
+@bp.route('/<city>/wordcloud')
+def get_wordcloud_data(city):
+    """
+    Get word frequency data for word cloud generation.
+    """
+    db = get_db()
+    
+    neighbourhood = request.args.get('neighbourhood')
+    sentiment_filter = request.args.get('sentiment')  # 'positive', 'negative', or None
+    limit = request.args.get('limit', default=100, type=int)
+    
+    # Build query
+    query = {'city': city, 'sentiment': {'$exists': True}}
+    
+    if sentiment_filter:
+        query['sentiment'] = sentiment_filter
+    
+    # If neighbourhood specified, need to filter by listing_id
+    if neighbourhood:
+        listing_ids = [
+            doc['id'] for doc in 
+            db.listings.find({'city': city, 'neighbourhood_cleansed': neighbourhood}, {'id': 1})
+        ]
+        query['listing_id'] = {'$in': listing_ids}
+    
+    # Get reviews (limit to avoid memory issues)
+    reviews = db.reviews.find(query, {'comments': 1}).limit(10000)
+    
+    # Count words (simple implementation)
+    from collections import Counter
+    import re
+    
+    word_counts = Counter()
+    
+    # Common stop words to exclude
+    stop_words = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+        'of', 'with', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has',
+        'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may',
+        'might', 'can', 'it', 'its', 'i', 'we', 'you', 'he', 'she', 'they',
+        'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'their',
+        'very', 'really', 'just', 'so', 'also', 'more', 'most', 'much'
+    }
+    
+    for review in reviews:
+        text = review.get('comments', '').lower()
+        words = re.findall(r'\b[a-z]{3,}\b', text)  # Words with 3+ letters
+        
+        for word in words:
+            if word not in stop_words:
+                word_counts[word] += 1
+    
+    # Get top words
+    top_words = [
+        {'word': word, 'count': count}
+        for word, count in word_counts.most_common(limit)
+    ]
+    
+    return jsonify({
+        'city': city,
+        'neighbourhood': neighbourhood,
+        'sentiment': sentiment_filter,
+        'words': top_words
+    })
+</file>
+
+<file path="backend/app/routes/listings.py">
+"""
+Listings API endpoints
+"""
+
+from flask import Blueprint, jsonify, request
+from ..database import get_db
+from bson import json_util
+import json
+
+bp = Blueprint('listings', __name__, url_prefix='/api/listings')
+
+
+@bp.route('/<city>')
+def get_listings(city):
+    """
+    Get listings for a city with optional filters.
+    
+    Query params:
+        - min_price: Minimum price
+        - max_price: Maximum price
+        - room_type: Room type filter
+        - neighbourhood: Neighbourhood filter
+        - limit: Max results (default 1000)
+    """
+    db = get_db()
+    
+    # Build query
+    query = {'city': city}
+    
+    # Price filters
+    min_price = request.args.get('min_price', type=float)
+    max_price = request.args.get('max_price', type=float)
+    
+    if min_price is not None or max_price is not None:
+        query['price'] = {}
+        if min_price is not None:
+            query['price']['$gte'] = min_price
+        if max_price is not None:
+            query['price']['$lte'] = max_price
+    
+    # Room type filter
+    room_type = request.args.get('room_type')
+    if room_type:
+        query['room_type'] = room_type
+    
+    # Neighbourhood filter
+    neighbourhood = request.args.get('neighbourhood')
+    if neighbourhood:
+        query['neighbourhood_cleansed'] = neighbourhood
+    
+    # Limit
+    limit = request.args.get('limit', default=1000, type=int)
+    limit = min(limit, 5000)  # Cap at 5000
+    
+    # Fields to return (exclude large fields)
+    projection = {
+        'id': 1,
+        'name': 1,
+        'latitude': 1,
+        'longitude': 1,
+        'price': 1,
+        'room_type': 1,
+        'neighbourhood_cleansed': 1,
+        'number_of_reviews': 1,
+        'review_scores_rating': 1
+    }
+    
+    # Query database
+    listings = list(db.listings.find(query, projection).limit(limit))
+    
+    # Convert ObjectId to string
+    listings_json = json.loads(json_util.dumps(listings))
+    
+    return jsonify({
+        'city': city,
+        'count': len(listings_json),
+        'listings': listings_json
+    })
+
+
+@bp.route('/<city>/<listing_id>')
+def get_listing_detail(city, listing_id):
+    """Get detailed information for a single listing."""
+    db = get_db()
+    
+    listing = db.listings.find_one({
+        'city': city,
+        'id': listing_id
+    })
+    
+    if not listing:
+        return jsonify({'error': 'Listing not found'}), 404
+    
+    # Get review sentiment for this listing
+    review_pipeline = [
+        {'$match': {'listing_id': listing_id, 'sentiment': {'$exists': True}}},
+        {'$group': {
+            '_id': '$sentiment',
+            'count': {'$sum': 1}
+        }}
+    ]
+    
+    sentiment_data = list(db.reviews.aggregate(review_pipeline))
+    
+    sentiment_summary = {
+        'positive': 0,
+        'neutral': 0,
+        'negative': 0
+    }
+    
+    for item in sentiment_data:
+        sentiment_summary[item['_id']] = item['count']
+    
+    # Convert ObjectId to string
+    listing_json = json.loads(json_util.dumps(listing))
+    listing_json['sentiment'] = sentiment_summary
+    
+    return jsonify(listing_json)
+
+
+@bp.route('/<city>/neighbourhoods')
+def get_neighbourhoods(city):
+    """Get list of neighbourhoods for a city."""
+    db = get_db()
+    
+    neighbourhoods = db.listings.distinct('neighbourhood_cleansed', {'city': city})
+    
+    return jsonify({
+        'city': city,
+        'neighbourhoods': sorted(neighbourhoods)
+    })
+
+
+@bp.route('/<city>/room-types')
+def get_room_types(city):
+    """Get list of room types for a city."""
+    db = get_db()
+    
+    room_types = db.listings.distinct('room_type', {'city': city})
+    
+    return jsonify({
+        'city': city,
+        'room_types': sorted(room_types)
+    })
+</file>
+
+<file path="backend/app/utils/__init__.py">
+
+</file>
+
+<file path="backend/app/__init__.py">
+"""
+Flask application factory
+"""
+
+from flask import Flask
+from flask_cors import CORS
+from .config import config
+from . import database
+
+
+def create_app(config_name='development'):
+    """
+    Create and configure Flask application.
+    
+    Args:
+        config_name: Configuration to use ('development', 'production')
+    
+    Returns:
+        Configured Flask app
+    """
+    app = Flask(__name__)
+    
+    # Load configuration
+    app.config.from_object(config[config_name])
+    
+    # Initialize extensions - Allow all origins for development
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": "*",
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "expose_headers": ["Content-Type"],
+            "supports_credentials": False,
+            "max_age": 3600
+        }
+    })
+    database.init_app(app)
+    
+    # Register blueprints
+    from .routes import analytics, listings
+    app.register_blueprint(analytics.bp)
+    app.register_blueprint(listings.bp)
+    
+    # Health check endpoint
+    @app.route('/')
+    def index():
+        return {
+            'status': 'ok',
+            'message': 'InnSight API is running',
+            'version': '1.0.0'
+        }
+    
+    @app.route('/health')
+    def health():
+        return {'status': 'healthy'}
+    
+    return app
+</file>
+
+<file path="backend/app/config.py">
+"""
+Flask application configuration
+"""
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+class Config:
+    """Base configuration"""
+    
+    # Flask
+    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key')
+    DEBUG = os.getenv('FLASK_DEBUG', 'True') == 'True'
+    
+    # MongoDB
+    MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
+    DB_NAME = 'innsight_db'
+    
+    # API
+    API_PORT = int(os.getenv('API_PORT', 5000))
+    
+    # CORS
+    CORS_ORIGINS = ['http://localhost:3000', 'http://localhost:5000']
+
+
+class DevelopmentConfig(Config):
+    """Development configuration"""
+    DEBUG = True
+
+
+class ProductionConfig(Config):
+    """Production configuration"""
+    DEBUG = False
+
+
+# Configuration dictionary
+config = {
+    'development': DevelopmentConfig,
+    'production': ProductionConfig,
+    'default': DevelopmentConfig
+}
+</file>
+
+<file path="backend/app/database.py">
+"""
+MongoDB database connection for Flask
+"""
+
+from pymongo import MongoClient
+from flask import current_app, g
+
+
+def get_db():
+    """
+    Get database connection.
+    Creates a new connection if one doesn't exist for this request.
+    """
+    if 'db' not in g:
+        client = MongoClient(current_app.config['MONGO_URI'])
+        g.db = client[current_app.config['DB_NAME']]
+        g.client = client
+    
+    return g.db
+
+
+def close_db(e=None):
+    """Close database connection."""
+    client = g.pop('client', None)
+    
+    if client is not None:
+        client.close()
+
+
+def init_app(app):
+    """Initialize database with Flask app."""
+    app.teardown_appcontext(close_db)
+</file>
+
+<file path="backend/data/processed/.gitkeep">
+
+</file>
+
+<file path="backend/data/__init__.py">
+
+</file>
+
+<file path="backend/data/config.py">
+"""
+Configuration file for InnSight data processing pipeline
+"""
+
+import os
+from pathlib import Path
+
+# Project root directory
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Supported cities
+CITIES = ['london', 'paris', 'amsterdam']
+
+# Data directories
+RAW_DATA_DIR = BASE_DIR / 'data' / 'raw'
+PROCESSED_DATA_DIR = BASE_DIR / 'data' / 'processed'
+
+# Ensure directories exist
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_city_paths(city_name):
+    """
+    Get file paths for a specific city's raw data files.
+    
+    Args:
+        city_name: Name of the city (e.g., 'london', 'paris', 'amsterdam')
+    
+    Returns:
+        Dictionary with paths to all data files for that city
+    """
+    city_raw = RAW_DATA_DIR / city_name
+    city_raw.mkdir(parents=True, exist_ok=True)
+    
+    return {
+        'listings': city_raw / 'listings.csv',
+        'reviews': city_raw / 'reviews.csv',
+        'calendar': city_raw / 'calendar.csv',
+        'neighbourhoods': city_raw / 'neighbourhoods.csv',
+        'geojson': city_raw / 'neighbourhoods.geojson'
+    }
+
+
+def get_processed_paths(city_name):
+    """
+    Get file paths for a specific city's processed data files.
+    
+    Args:
+        city_name: Name of the city
+    
+    Returns:
+        Dictionary with paths to processed data files
+    """
+    return {
+        'listings': PROCESSED_DATA_DIR / f'{city_name}_listings_clean.csv',
+        'reviews': PROCESSED_DATA_DIR / f'{city_name}_reviews_clean.csv',
+        'calendar': PROCESSED_DATA_DIR / f'{city_name}_calendar_clean.csv',
+        'neighbourhoods': PROCESSED_DATA_DIR / f'{city_name}_neighbourhoods_clean.csv',
+        'geojson': PROCESSED_DATA_DIR / f'{city_name}_neighbourhoods.geojson'
+    }
+
+
+# MongoDB configuration
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
+DB_NAME = 'innsight_db'
+
+COLLECTIONS = {
+    'listings': 'listings',
+    'reviews': 'reviews',
+    'calendar': 'calendar',
+    'neighbourhoods': 'neighbourhoods'
+}
+
+# Columns to keep from listings.csv
+LISTINGS_COLUMNS = [
+    'id', 'listing_url', 'name', 'description',
+    'host_id', 'host_name', 'host_since',
+    'host_response_rate', 'host_is_superhost',
+    'host_listings_count', 'neighbourhood_cleansed',
+    'latitude', 'longitude', 'property_type',
+    'room_type', 'accommodates', 'bathrooms',
+    'bedrooms', 'beds', 'amenities', 'price',
+    'minimum_nights', 'maximum_nights',
+    'number_of_reviews', 'review_scores_rating',
+    'instant_bookable'
+]
+
+# Columns to keep from reviews.csv
+REVIEWS_COLUMNS = [
+    'listing_id', 'id', 'date',
+    'reviewer_id', 'reviewer_name', 'comments'
+]
+
+# Columns to keep from calendar.csv
+CALENDAR_COLUMNS = [
+    'listing_id', 'date', 'available',
+    'price', 'minimum_nights', 'maximum_nights'
+]
+
+# Coordinate validation ranges for each city
+COORDINATE_RANGES = {
+    'london': {
+        'latitude': (51.28, 51.70),
+        'longitude': (-0.51, 0.34)
+    },
+    'paris': {
+        'latitude': (48.81, 48.90),
+        'longitude': (2.22, 2.47)
+    },
+    'amsterdam': {
+        'latitude': (52.28, 52.43),
+        'longitude': (4.73, 5.08)
+    }
+}
+
+# Data validation rules
+VALIDATION_RULES = {
+    'listings': {
+        'required_columns': ['id', 'name', 'latitude', 'longitude', 'price'],
+        'numeric_columns': ['latitude', 'longitude', 'accommodates', 'bedrooms', 'beds', 'price'],
+        'price_range': (0, 10000)
+    },
+    'reviews': {
+        'required_columns': ['listing_id', 'date', 'comments'],
+        'min_comment_length': 10
+    },
+    'calendar': {
+        'required_columns': ['listing_id', 'date', 'available']
+    }
+}
+
+# ETL settings
+CHUNK_SIZE = 10000  # Process large files in chunks
+DATE_FORMAT = '%Y-%m-%d'
+
+# Inside Airbnb data URLs
+DATA_URLS = {
+    'london': 'http://data.insideairbnb.com/united-kingdom/england/london/',
+    'paris': 'http://data.insideairbnb.com/france/ile-de-france/paris/',
+    'amsterdam': 'http://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/'
+}
+</file>
+
+<file path="backend/data/data_cleaner.py">
+"""
+Data cleaning module for processing raw CSV files
+"""
+
+import pandas as pd
+import logging
+from .config import LISTINGS_COLUMNS, REVIEWS_COLUMNS, CALENDAR_COLUMNS
+from .utils import (
+    clean_price, 
+    parse_date, 
+    clean_percentage, 
+    parse_boolean,
+    clean_text,
+    parse_amenities,
+    remove_duplicates,
+    log_data_summary
+)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class DataCleaner:
+    """Cleans and transforms raw data from CSV files."""
+    
+    def __init__(self, city_name: str):
+        """
+        Initialize data cleaner for a specific city.
+        
+        Args:
+            city_name: Name of the city (e.g., 'london', 'paris', 'amsterdam')
+        """
+        self.city_name = city_name
+    
+    def clean_listings(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean listings data.
+        
+        Args:
+            df: Raw listings DataFrame
+            
+        Returns:
+            Cleaned listings DataFrame
+        """
+        logger.info(f"Cleaning {self.city_name} listings data...")
+        
+        # Select only required columns (if they exist)
+        available_cols = [col for col in LISTINGS_COLUMNS if col in df.columns]
+        df = df[available_cols].copy()
+        
+        # Add city column
+        df['city'] = self.city_name
+        
+        # Clean price
+        if 'price' in df.columns:
+            df['price'] = df['price'].apply(clean_price)
+        
+        # Clean host response rate
+        if 'host_response_rate' in df.columns:
+            df['host_response_rate'] = df['host_response_rate'].apply(clean_percentage)
+        
+        # Parse boolean fields
+        boolean_fields = ['host_is_superhost', 'instant_bookable']
+        for field in boolean_fields:
+            if field in df.columns:
+                df[field] = df[field].apply(parse_boolean)
+        
+        # Clean text fields
+        text_fields = ['name', 'description']
+        for field in text_fields:
+            if field in df.columns:
+                df[field] = df[field].apply(clean_text)
+        
+        # Parse amenities
+        if 'amenities' in df.columns:
+            df['amenities'] = df['amenities'].apply(parse_amenities)
+        
+        # Convert numeric fields
+        numeric_fields = [
+            'latitude', 'longitude', 'accommodates', 
+            'bathrooms', 'bedrooms', 'beds',
+            'minimum_nights', 'maximum_nights',
+            'number_of_reviews', 'review_scores_rating',
+            'host_listings_count'
+        ]
+        
+        for field in numeric_fields:
+            if field in df.columns:
+                df[field] = pd.to_numeric(df[field], errors='coerce')
+        
+        # Parse dates
+        if 'host_since' in df.columns:
+            df['host_since'] = pd.to_datetime(df['host_since'], errors='coerce')
+        
+        # Remove duplicates
+        df = remove_duplicates(df, subset=['id'])
+        
+        # Convert id to string for consistency
+        df['id'] = df['id'].astype(str)
+        if 'host_id' in df.columns:
+            df['host_id'] = df['host_id'].astype(str)
+        
+        log_data_summary(df, f"{self.city_name.title()} Cleaned Listings")
+        logger.info("Listings cleaning complete")
+        
+        return df
+    
+    def clean_reviews(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean reviews data.
+        
+        Args:
+            df: Raw reviews DataFrame
+            
+        Returns:
+            Cleaned reviews DataFrame
+        """
+        logger.info(f"Cleaning {self.city_name} reviews data...")
+        
+        # Select only required columns
+        available_cols = [col for col in REVIEWS_COLUMNS if col in df.columns]
+        df = df[available_cols].copy()
+        
+        # Add city column
+        df['city'] = self.city_name
+        
+        # Convert IDs to string
+        df['listing_id'] = df['listing_id'].astype(str)
+        df['id'] = df['id'].astype(str)
+        if 'reviewer_id' in df.columns:
+            df['reviewer_id'] = df['reviewer_id'].astype(str)
+        
+        # Parse date
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        
+        # Clean comments text
+        if 'comments' in df.columns:
+            df['comments'] = df['comments'].apply(lambda x: clean_text(x, remove_html=True))
+            
+            # Remove rows with empty comments after cleaning
+            df = df[df['comments'].notna()]
+            df = df[df['comments'].str.len() >= 10]  # Minimum 10 characters
+        
+        # Clean reviewer name
+        if 'reviewer_name' in df.columns:
+            df['reviewer_name'] = df['reviewer_name'].apply(lambda x: clean_text(x, remove_html=False))
+        
+        # Remove duplicates
+        df = remove_duplicates(df, subset=['id'])
+        
+        # Sort by date
+        if 'date' in df.columns:
+            df = df.sort_values('date')
+        
+        log_data_summary(df, f"{self.city_name.title()} Cleaned Reviews")
+        logger.info("Reviews cleaning complete")
+        
+        return df
+    
+    def clean_calendar(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean calendar data.
+        
+        Args:
+            df: Raw calendar DataFrame
+            
+        Returns:
+            Cleaned calendar DataFrame
+        """
+        logger.info(f"Cleaning {self.city_name} calendar data...")
+        
+        # Select only required columns
+        available_cols = [col for col in CALENDAR_COLUMNS if col in df.columns]
+        df = df[available_cols].copy()
+        
+        # Add city column
+        df['city'] = self.city_name
+        
+        # Convert listing_id to string
+        df['listing_id'] = df['listing_id'].astype(str)
+        
+        # Parse date
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'], errors='coerce')
+            df = df.dropna(subset=['date'])
+        
+        # Parse available field
+        if 'available' in df.columns:
+            df['available'] = df['available'].apply(parse_boolean)
+        
+        # Clean price
+        if 'price' in df.columns:
+            df['price'] = df['price'].apply(clean_price)
+        
+        # Convert numeric fields
+        numeric_fields = ['minimum_nights', 'maximum_nights']
+        for field in numeric_fields:
+            if field in df.columns:
+                df[field] = pd.to_numeric(df[field], errors='coerce')
+        
+        # Remove duplicates (listing_id + date should be unique)
+        df = remove_duplicates(df, subset=['listing_id', 'date'])
+        
+        # Sort by listing_id and date
+        df = df.sort_values(['listing_id', 'date'])
+        
+        log_data_summary(df, f"{self.city_name.title()} Cleaned Calendar")
+        logger.info("Calendar cleaning complete")
+        
+        return df
+</file>
+
+<file path="backend/data/etl_pipeline.py">
+"""
+ETL Pipeline for processing Airbnb data
+"""
+
+import pandas as pd
+import logging
+from pathlib import Path
+from .config import get_city_paths, get_processed_paths, CHUNK_SIZE
+from .data_cleaner import DataCleaner
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class ETLPipeline:
+    """Main ETL pipeline orchestrator."""
+    
+    def __init__(self, city_name: str):
+        """
+        Initialize ETL pipeline for a specific city.
+        
+        Args:
+            city_name: Name of the city (e.g., 'london', 'paris', 'amsterdam')
+        """
+        self.city_name = city_name
+        self.cleaner = DataCleaner(city_name)
+        self.raw_paths = get_city_paths(city_name)
+        self.processed_paths = get_processed_paths(city_name)
+    
+    def process_listings(self) -> pd.DataFrame:
+        """
+        Process listings data: Extract -> Clean -> Save
+        
+        Returns:
+            Cleaned listings DataFrame
+        """
+        logger.info(f"\n{'='*60}")
+        logger.info(f"PROCESSING {self.city_name.upper()} LISTINGS")
+        logger.info(f"{'='*60}")
+        
+        # Extract
+        logger.info(f"Loading from: {self.raw_paths['listings']}")
+        df = pd.read_csv(self.raw_paths['listings'], low_memory=False)
+        logger.info(f"Loaded {len(df):,} raw listings")
+        
+        # Clean
+        df_clean = self.cleaner.clean_listings(df)
+        
+        # Save
+        output_path = self.processed_paths['listings']
+        df_clean.to_csv(output_path, index=False)
+        logger.info(f"✅ Saved to: {output_path}")
+        logger.info(f"Final row count: {len(df_clean):,}")
+        
+        return df_clean
+    
+    def process_reviews(self, use_chunks: bool = True) -> pd.DataFrame:
+        """
+        Process reviews data (may be large, so use chunks).
+        
+        Args:
+            use_chunks: Whether to process in chunks
+            
+        Returns:
+            Cleaned reviews DataFrame
+        """
+        logger.info(f"\n{'='*60}")
+        logger.info(f"PROCESSING {self.city_name.upper()} REVIEWS")
+        logger.info(f"{'='*60}")
+        
+        raw_path = self.raw_paths['reviews']
+        output_path = self.processed_paths['reviews']
+        
+        if use_chunks:
+            logger.info("Processing reviews in chunks...")
+            chunks = []
+            
+            for i, chunk in enumerate(pd.read_csv(raw_path, chunksize=CHUNK_SIZE)):
+                logger.info(f"Processing chunk {i+1}...")
+                cleaned_chunk = self.cleaner.clean_reviews(chunk)
+                chunks.append(cleaned_chunk)
+            
+            df_clean = pd.concat(chunks, ignore_index=True)
+        else:
+            logger.info(f"Loading from: {raw_path}")
+            df = pd.read_csv(raw_path)
+            df_clean = self.cleaner.clean_reviews(df)
+        
+        # Save
+        df_clean.to_csv(output_path, index=False)
+        logger.info(f"✅ Saved to: {output_path}")
+        logger.info(f"Final row count: {len(df_clean):,}")
+        
+        return df_clean
+    
+    def process_calendar(self, use_chunks: bool = True) -> pd.DataFrame:
+        """
+        Process calendar data (very large, use chunks).
+        
+        Args:
+            use_chunks: Whether to process in chunks
+            
+        Returns:
+            Cleaned calendar DataFrame
+        """
+        logger.info(f"\n{'='*60}")
+        logger.info(f"PROCESSING {self.city_name.upper()} CALENDAR")
+        logger.info(f"{'='*60}")
+        
+        raw_path = self.raw_paths['calendar']
+        output_path = self.processed_paths['calendar']
+        
+        if use_chunks:
+            logger.info("Processing calendar in chunks (this may take a few minutes)...")
+            chunks = []
+            
+            for i, chunk in enumerate(pd.read_csv(raw_path, chunksize=CHUNK_SIZE)):
+                logger.info(f"Processing chunk {i+1}...")
+                cleaned_chunk = self.cleaner.clean_calendar(chunk)
+                chunks.append(cleaned_chunk)
+            
+            df_clean = pd.concat(chunks, ignore_index=True)
+        else:
+            logger.info(f"Loading from: {raw_path}")
+            df = pd.read_csv(raw_path)
+            df_clean = self.cleaner.clean_calendar(df)
+        
+        # Save
+        df_clean.to_csv(output_path, index=False)
+        logger.info(f"✅ Saved to: {output_path}")
+        logger.info(f"Final row count: {len(df_clean):,}")
+        
+        return df_clean
+    
+    def run_full_pipeline(self, skip_calendar: bool = False):
+        """
+        Run the complete ETL pipeline for all datasets.
+        
+        Args:
+            skip_calendar: Whether to skip calendar processing (it's very large)
+        
+        Returns:
+            Dictionary with all processed DataFrames
+        """
+        logger.info(f"\n{'#'*60}")
+        logger.info(f"# STARTING FULL ETL PIPELINE FOR {self.city_name.upper()}")
+        logger.info(f"{'#'*60}\n")
+        
+        results = {}
+        
+        try:
+            # Process listings
+            results['listings'] = self.process_listings()
+            
+            # Process reviews
+            results['reviews'] = self.process_reviews()
+            
+            # Process calendar (optional, as it's very large)
+            if not skip_calendar:
+                results['calendar'] = self.process_calendar()
+            else:
+                logger.info("\n⏭️  Skipping calendar processing (use skip_calendar=False to process)")
+            
+            logger.info(f"\n{'#'*60}")
+            logger.info(f"# ETL PIPELINE COMPLETED SUCCESSFULLY")
+            logger.info(f"{'#'*60}")
+            
+            # Print summary
+            logger.info(f"\n📊 Final Summary for {self.city_name.title()}:")
+            logger.info(f"  Listings: {len(results['listings']):,} rows")
+            logger.info(f"  Reviews: {len(results['reviews']):,} rows")
+            if not skip_calendar:
+                logger.info(f"  Calendar: {len(results['calendar']):,} rows")
+            
+        except Exception as e:
+            logger.error(f"❌ ETL Pipeline failed: {e}")
+            raise
+        
+        return results
+
+
+def main():
+    """Run ETL pipeline from command line."""
+    import sys
+    
+    city = sys.argv[1] if len(sys.argv) > 1 else 'london'
+    skip_cal = '--skip-calendar' in sys.argv
+    
+    logger.info(f"Running ETL for city: {city}")
+    
+    pipeline = ETLPipeline(city)
+    pipeline.run_full_pipeline(skip_calendar=skip_cal)
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="backend/data/mongodb_loader.py">
+"""
+MongoDB data loader - loads cleaned CSV files into MongoDB
+"""
+
+import pandas as pd
+import logging
+from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo.errors import ConnectionFailure, BulkWriteError
+from pathlib import Path
+from .config import MONGO_URI, DB_NAME, COLLECTIONS, get_processed_paths
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class MongoDBLoader:
+    """Load cleaned data into MongoDB."""
+    
+    def __init__(self, uri: str = MONGO_URI, db_name: str = DB_NAME):
+        """
+        Initialize MongoDB connection.
+        
+        Args:
+            uri: MongoDB connection URI
+            db_name: Database name
+        """
+        self.uri = uri
+        self.db_name = db_name
+        self.client = None
+        self.db = None
+    
+    def connect(self):
+        """Establish connection to MongoDB."""
+        try:
+            logger.info(f"Connecting to MongoDB at {self.uri}...")
+            self.client = MongoClient(self.uri, serverSelectionTimeoutMS=5000)
+            
+            # Test connection
+            self.client.admin.command('ping')
+            
+            self.db = self.client[self.db_name]
+            logger.info(f"✅ Connected to database: {self.db_name}")
+            
+        except ConnectionFailure as e:
+            logger.error(f"❌ Failed to connect to MongoDB: {e}")
+            raise
+    
+    def disconnect(self):
+        """Close MongoDB connection."""
+        if self.client:
+            self.client.close()
+            logger.info("Disconnected from MongoDB")
+    
+    def drop_collections(self):
+        """Drop all existing collections (use with caution!)."""
+        logger.warning("⚠️  Dropping all existing collections...")
+        
+        for collection_name in COLLECTIONS.values():
+            if collection_name in self.db.list_collection_names():
+                self.db[collection_name].drop()
+                logger.info(f"  Dropped: {collection_name}")
+    
+    def create_indexes(self):
+        """Create indexes for better query performance."""
+        logger.info("\n📊 Creating database indexes...")
+        
+        # Listings indexes
+        listings = self.db[COLLECTIONS['listings']]
+        listings.create_index([('id', ASCENDING)], unique=True)
+        listings.create_index([('city', ASCENDING)])
+        listings.create_index([('neighbourhood_cleansed', ASCENDING)])
+        listings.create_index([('price', ASCENDING)])
+        listings.create_index([('room_type', ASCENDING)])
+        logger.info("  ✅ Listings indexes created")
+        
+        # Reviews indexes
+        reviews = self.db[COLLECTIONS['reviews']]
+        reviews.create_index([('id', ASCENDING)], unique=True)
+        reviews.create_index([('listing_id', ASCENDING)])
+        reviews.create_index([('city', ASCENDING)])
+        reviews.create_index([('date', DESCENDING)])
+        logger.info("  ✅ Reviews indexes created")
+        
+        logger.info("✅ All indexes created successfully")
+    
+    def load_listings(self, city: str, batch_size: int = 1000) -> int:
+        """
+        Load listings into MongoDB in batches.
+        
+        Args:
+            city: City name (e.g., 'london')
+            batch_size: Number of records per batch
+            
+        Returns:
+            Number of documents inserted
+        """
+        processed_paths = get_processed_paths(city)
+        filepath = processed_paths['listings']
+        
+        logger.info(f"\n📥 Loading {city} listings from: {filepath}")
+        
+        if not filepath.exists():
+            logger.error(f"❌ File not found: {filepath}")
+            return 0
+        
+        collection = self.db[COLLECTIONS['listings']]
+        total_inserted = 0
+        
+        # Read in chunks
+        for chunk_num, chunk in enumerate(pd.read_csv(filepath, chunksize=batch_size)):
+            records = chunk.to_dict('records')
+            
+            # Clean records (convert NaN to None)
+            for record in records:
+                for key, value in record.items():
+                    if pd.isna(value):
+                        record[key] = None
+                    elif hasattr(value, 'item'):
+                        record[key] = value.item()
+            
+            try:
+                result = collection.insert_many(records, ordered=False)
+                total_inserted += len(result.inserted_ids)
+                
+                if (chunk_num + 1) % 10 == 0:
+                    logger.info(f"  Processed {total_inserted:,} listings...")
+                    
+            except BulkWriteError as e:
+                total_inserted += e.details['nInserted']
+                logger.warning(f"  Some records failed in batch {chunk_num + 1}")
+        
+        logger.info(f"✅ Inserted {total_inserted:,} {city} listings")
+        return total_inserted
+    
+    def load_reviews(self, city: str, batch_size: int = 5000) -> int:
+        """
+        Load reviews into MongoDB in batches.
+        
+        Args:
+            city: City name
+            batch_size: Number of records per batch
+            
+        Returns:
+            Number of documents inserted
+        """
+        processed_paths = get_processed_paths(city)
+        filepath = processed_paths['reviews']
+        
+        logger.info(f"\n📥 Loading {city} reviews from: {filepath}")
+        logger.info("  (This may take a few minutes...)")
+        
+        if not filepath.exists():
+            logger.error(f"❌ File not found: {filepath}")
+            return 0
+        
+        collection = self.db[COLLECTIONS['reviews']]
+        total_inserted = 0
+        
+        # Read in chunks
+        for chunk_num, chunk in enumerate(pd.read_csv(filepath, chunksize=batch_size)):
+            records = chunk.to_dict('records')
+            
+            # Clean records
+            for record in records:
+                for key, value in record.items():
+                    if pd.isna(value):
+                        record[key] = None
+                    elif hasattr(value, 'item'):
+                        record[key] = value.item()
+            
+            try:
+                result = collection.insert_many(records, ordered=False)
+                total_inserted += len(result.inserted_ids)
+                
+                if (chunk_num + 1) % 20 == 0:
+                    logger.info(f"  Processed {total_inserted:,} reviews...")
+                    
+            except BulkWriteError as e:
+                total_inserted += e.details['nInserted']
+        
+        logger.info(f"✅ Inserted {total_inserted:,} {city} reviews")
+        return total_inserted
+    
+    def load_city(self, city: str, drop_existing: bool = False):
+        """
+        Load all data for a specific city.
+        
+        Args:
+            city: City name
+            drop_existing: Whether to drop existing data first
+        """
+        logger.info(f"\n{'='*60}")
+        logger.info(f"LOADING {city.upper()} DATA INTO MONGODB")
+        logger.info(f"{'='*60}")
+        
+        self.connect()
+        
+        try:
+            if drop_existing:
+                self.drop_collections()
+            
+            # Load listings
+            listings_count = self.load_listings(city)
+            
+            # Load reviews
+            reviews_count = self.load_reviews(city)
+            
+            # Create indexes
+            self.create_indexes()
+            
+            logger.info(f"\n{'='*60}")
+            logger.info(f"✅ {city.upper()} DATA LOADED SUCCESSFULLY")
+            logger.info(f"{'='*60}")
+            logger.info(f"\n📊 Summary:")
+            logger.info(f"  Listings: {listings_count:,}")
+            logger.info(f"  Reviews: {reviews_count:,}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load data: {e}")
+            raise
+        finally:
+            self.disconnect()
+
+
+def main():
+    """Run MongoDB loader from command line."""
+    import sys
+    
+    city = sys.argv[1] if len(sys.argv) > 1 else 'london'
+    drop = '--drop' in sys.argv
+    
+    loader = MongoDBLoader()
+    loader.load_city(city, drop_existing=drop)
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="backend/data/utils.py">
+"""
+Utility functions for data cleaning and processing
+"""
+
+import re
+import pandas as pd
+from datetime import datetime
+from typing import Optional, Union
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def clean_price(price_str: Union[str, float, None]) -> Optional[float]:
+    """
+    Clean price string and convert to float.
+    
+    Args:
+        price_str: Price as string (e.g., "$123.45") or float
+        
+    Returns:
+        Float price or None if invalid
+    """
+    if pd.isna(price_str) or price_str == '':
+        return None
+    
+    if isinstance(price_str, (int, float)):
+        return float(price_str)
+    
+    # Remove currency symbols and commas
+    cleaned = re.sub(r'[$,€£]', '', str(price_str))
+    
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_date(date_str: Union[str, datetime, None]) -> Optional[datetime]:
+    """
+    Parse date string to datetime object.
+    
+    Args:
+        date_str: Date as string or datetime
+        
+    Returns:
+        Datetime object or None if invalid
+    """
+    if pd.isna(date_str) or date_str == '':
+        return None
+    
+    if isinstance(date_str, datetime):
+        return date_str
+    
+    try:
+        return pd.to_datetime(date_str)
+    except (ValueError, TypeError):
+        return None
+
+
+def clean_percentage(percent_str: Union[str, float, None]) -> Optional[float]:
+    """
+    Clean percentage string and convert to float (0-100 scale).
+    
+    Args:
+        percent_str: Percentage as string (e.g., "95%") or float
+        
+    Returns:
+        Float percentage or None if invalid
+    """
+    if pd.isna(percent_str) or percent_str == '':
+        return None
+    
+    if isinstance(percent_str, (int, float)):
+        return float(percent_str)
+    
+    # Remove percentage symbol
+    cleaned = str(percent_str).replace('%', '').strip()
+    
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_boolean(value: Union[str, bool, None]) -> Optional[bool]:
+    """
+    Parse various boolean representations to bool.
+    
+    Args:
+        value: Boolean as string ('t', 'f', 'true', 'false') or bool
+        
+    Returns:
+        Boolean or None if invalid
+    """
+    if pd.isna(value) or value == '':
+        return None
+    
+    if isinstance(value, bool):
+        return value
+    
+    value_lower = str(value).lower().strip()
+    
+    if value_lower in ['t', 'true', '1', 'yes']:
+        return True
+    elif value_lower in ['f', 'false', '0', 'no']:
+        return False
+    else:
+        return None
+
+
+def clean_text(text: Union[str, None], remove_html: bool = True) -> Optional[str]:
+    """
+    Clean text by removing extra whitespace and optionally HTML tags.
+    
+    Args:
+        text: Text to clean
+        remove_html: Whether to remove HTML tags
+        
+    Returns:
+        Cleaned text or None if empty
+    """
+    if pd.isna(text) or text == '':
+        return None
+    
+    text = str(text)
+    
+    # Remove HTML tags if requested
+    if remove_html:
+        text = re.sub(r'<[^>]+>', '', text)
+        text = re.sub(r'<br\s*/?\s*>', ' ', text)
+    
+    # Remove extra whitespace
+    text = ' '.join(text.split())
+    
+    return text.strip() if text else None
+
+
+def parse_amenities(amenities_str: Union[str, list, None]) -> list:
+    """
+    Parse amenities string/list into a clean list.
+    
+    Args:
+        amenities_str: Amenities as string or list
+        
+    Returns:
+        List of amenities
+    """
+    if pd.isna(amenities_str) or amenities_str == '':
+        return []
+    
+    if isinstance(amenities_str, list):
+        return amenities_str
+    
+    # Remove brackets and quotes, split by comma
+    amenities_str = str(amenities_str).strip('[]')
+    amenities = [a.strip(' "\'') for a in amenities_str.split(',')]
+    
+    return [a for a in amenities if a]
+
+
+def validate_coordinates(lat: float, lon: float, 
+                        lat_range: tuple, 
+                        lon_range: tuple) -> bool:
+    """
+    Validate if coordinates are within specified bounds.
+    
+    Args:
+        lat: Latitude
+        lon: Longitude
+        lat_range: Valid latitude range (min, max)
+        lon_range: Valid longitude range (min, max)
+        
+    Returns:
+        True if valid, False otherwise
+    """
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        
+        return (lat_range[0] <= lat <= lat_range[1] and 
+                lon_range[0] <= lon <= lon_range[1])
+    except (ValueError, TypeError):
+        return False
+
+
+def remove_duplicates(df: pd.DataFrame, subset: list, keep: str = 'first') -> pd.DataFrame:
+    """
+    Remove duplicate rows from DataFrame.
+    
+    Args:
+        df: DataFrame to deduplicate
+        subset: Columns to check for duplicates
+        keep: Which duplicate to keep ('first', 'last', False)
+        
+    Returns:
+        DataFrame without duplicates
+    """
+    initial_count = len(df)
+    df_clean = df.drop_duplicates(subset=subset, keep=keep)
+    removed = initial_count - len(df_clean)
+    
+    if removed > 0:
+        logger.info(f"Removed {removed} duplicate rows")
+    
+    return df_clean
+
+
+def log_data_summary(df: pd.DataFrame, name: str):
+    """
+    Log summary statistics for a DataFrame.
+    
+    Args:
+        df: DataFrame to summarize
+        name: Name of the dataset
+    """
+    logger.info(f"\n{name} Summary:")
+    logger.info(f"  Total rows: {len(df):,}")
+    logger.info(f"  Total columns: {len(df.columns)}")
+    logger.info(f"  Memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+    
+    # Missing values
+    missing = df.isnull().sum()
+    if missing.sum() > 0:
+        logger.info(f"  Columns with missing values:")
+        for col, count in missing[missing > 0].items():
+            pct = count/len(df)*100
+            logger.info(f"    {col}: {count:,} ({pct:.1f}%)")
+</file>
+
+<file path="backend/ml/models/.gitkeep">
+
+</file>
+
+<file path="backend/ml/__init__.py">
+
+</file>
+
+<file path="backend/ml/add_sentiment_to_db.py">
+"""
+Add sentiment analysis to all reviews in MongoDB
+"""
+
+import sys
+sys.path.append('..')
+
+from pymongo import MongoClient
+from sentiment_analyzer import ReviewSentimentAnalyzer
+import logging
+from tqdm import tqdm
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# MongoDB connection
+MONGO_URI = 'mongodb://localhost:27017/'
+DB_NAME = 'innsight_db'
+BATCH_SIZE = 1000  # Process 1000 reviews at a time
+
+
+def add_sentiment_to_reviews(city: str = 'london'):
+    """
+    Add sentiment analysis to all reviews in the database.
+    
+    Args:
+        city: City name to process
+    """
+    logger.info(f"\n{'='*60}")
+    logger.info(f"ADDING SENTIMENT TO {city.upper()} REVIEWS")
+    logger.info(f"{'='*60}\n")
+    
+    # Connect to MongoDB
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = client[DB_NAME]
+    reviews_collection = db['reviews']
+    
+    # Initialize sentiment analyzer
+    analyzer = ReviewSentimentAnalyzer()
+    
+    # Get total count
+    total_reviews = reviews_collection.count_documents({'city': city})
+    logger.info(f"Total reviews in database: {total_reviews:,}")
+    
+    if total_reviews == 0:
+        logger.error("❌ No reviews found! Check if data was loaded correctly.")
+        client.close()
+        return
+    
+    # Check how many already have sentiment
+    with_sentiment = reviews_collection.count_documents({
+        'city': city,
+        'sentiment': {'$exists': True}
+    })
+    
+    logger.info(f"Reviews with sentiment: {with_sentiment:,}")
+    
+    # Decide what to process
+    if with_sentiment > 0:
+        logger.info(f"\n⚠️  Found {with_sentiment:,} reviews already with sentiment")
+        response = input("Re-process ALL reviews? (y/n): ").strip().lower()
+        if response != 'y':
+            logger.info("Processing only reviews without sentiment...")
+            query = {'city': city, 'sentiment': {'$exists': False}}
+        else:
+            logger.info("Re-processing ALL reviews...")
+            query = {'city': city}
+    else:
+        query = {'city': city}
+    
+    # Count reviews to process
+    to_process = reviews_collection.count_documents(query)
+    logger.info(f"\n🔄 Processing {to_process:,} reviews...\n")
+    
+    if to_process == 0:
+        logger.info("✅ All reviews already have sentiment!")
+        client.close()
+        return
+    
+    # Process in batches
+    processed = 0
+    updated = 0
+    errors = 0
+    
+    # Get cursor
+    cursor = reviews_collection.find(query).batch_size(BATCH_SIZE)
+    
+    # Use tqdm for progress bar
+    with tqdm(total=to_process, desc="Analyzing sentiment", unit="reviews") as pbar:
+        batch = []
+        
+        for review in cursor:
+            batch.append(review)
+            
+            # Process batch when it reaches BATCH_SIZE
+            if len(batch) >= BATCH_SIZE:
+                batch_updated, batch_errors = process_batch(batch, reviews_collection, analyzer)
+                updated += batch_updated
+                errors += batch_errors
+                processed += len(batch)
+                pbar.update(len(batch))
+                batch = []
+        
+        # Process remaining reviews
+        if batch:
+            batch_updated, batch_errors = process_batch(batch, reviews_collection, analyzer)
+            updated += batch_updated
+            errors += batch_errors
+            processed += len(batch)
+            pbar.update(len(batch))
+    
+    logger.info(f"\n{'='*60}")
+    logger.info(f"✅ SENTIMENT ANALYSIS COMPLETE")
+    logger.info(f"{'='*60}")
+    logger.info(f"Processed: {processed:,} reviews")
+    logger.info(f"Updated: {updated:,} reviews")
+    if errors > 0:
+        logger.warning(f"Errors: {errors:,} reviews")
+    
+    # Get final statistics
+    stats = get_sentiment_statistics(reviews_collection, city)
+    print_statistics(stats)
+    
+    client.close()
+
+
+def process_batch(batch, collection, analyzer):
+    """Process a batch of reviews."""
+    updated_count = 0
+    error_count = 0
+    
+    for review in batch:
+        try:
+            comment = review.get('comments', '')
+            
+            if not comment or not isinstance(comment, str):
+                continue
+            
+            # Analyze sentiment
+            sentiment, score, scores = analyzer.analyze_review(comment)
+            
+            # Update document directly
+            result = collection.update_one(
+                {'_id': review['_id']},
+                {'$set': {
+                    'sentiment': sentiment,
+                    'sentiment_score': round(score, 4),
+                    'sentiment_scores': {
+                        'positive': round(scores['pos'], 4),
+                        'neutral': round(scores['neu'], 4),
+                        'negative': round(scores['neg'], 4)
+                    }
+                }}
+            )
+            
+            if result.modified_count > 0:
+                updated_count += 1
+                
+        except Exception as e:
+            error_count += 1
+            if error_count <= 5:  # Only log first 5 errors
+                logger.error(f"Error processing review {review.get('id')}: {e}")
+    
+    return updated_count, error_count
+
+
+def get_sentiment_statistics(collection, city):
+    """Get sentiment statistics for a city."""
+    pipeline = [
+        {'$match': {'city': city, 'sentiment': {'$exists': True}}},
+        {'$group': {
+            '_id': '$sentiment',
+            'count': {'$sum': 1},
+            'avg_score': {'$avg': '$sentiment_score'}
+        }}
+    ]
+    
+    results = list(collection.aggregate(pipeline))
+    
+    stats = {
+        'positive': 0,
+        'negative': 0,
+        'neutral': 0,
+        'total': 0,
+        'avg_scores': {}
+    }
+    
+    for result in results:
+        sentiment = result['_id']
+        count = result['count']
+        stats[sentiment] = count
+        stats['total'] += count
+        stats['avg_scores'][sentiment] = round(result['avg_score'], 3)
+    
+    return stats
+
+
+def print_statistics(stats):
+    """Print sentiment statistics."""
+    total = stats['total']
+    
+    if total == 0:
+        logger.warning("\n⚠️  No sentiment data found in database.")
+        logger.warning("This might mean the updates didn't work.")
+        return
+    
+    logger.info(f"\n📊 SENTIMENT STATISTICS:")
+    logger.info(f"  Total reviews analyzed: {total:,}")
+    logger.info(f"  ")
+    logger.info(f"  Positive: {stats['positive']:,} ({stats['positive']/total*100:.1f}%)")
+    logger.info(f"    Average score: {stats['avg_scores'].get('positive', 0):.3f}")
+    logger.info(f"  ")
+    logger.info(f"  Neutral: {stats['neutral']:,} ({stats['neutral']/total*100:.1f}%)")
+    logger.info(f"    Average score: {stats['avg_scores'].get('neutral', 0):.3f}")
+    logger.info(f"  ")
+    logger.info(f"  Negative: {stats['negative']:,} ({stats['negative']/total*100:.1f}%)")
+    logger.info(f"    Average score: {stats['avg_scores'].get('negative', 0):.3f}")
+
+
+def main():
+    """Run sentiment analysis from command line."""
+    city = sys.argv[1] if len(sys.argv) > 1 else 'london'
+    
+    try:
+        add_sentiment_to_reviews(city)
+    except KeyboardInterrupt:
+        logger.info("\n\n⚠️  Process interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="backend/ml/sentiment_analyzer.py">
+"""
+Sentiment Analysis for Airbnb Reviews using NLTK VADER
+"""
+
+import logging
+from nltk.sentiment import SentimentIntensityAnalyzer
+from typing import Dict, List, Tuple
+import nltk
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+class ReviewSentimentAnalyzer:
+    """Analyze sentiment of Airbnb reviews."""
+    
+    def __init__(self):
+        """Initialize the sentiment analyzer."""
+        # Ensure VADER lexicon is downloaded
+        try:
+            nltk.data.find('sentiment/vader_lexicon.zip')
+        except LookupError:
+            logger.info("Downloading VADER lexicon...")
+            nltk.download('vader_lexicon')
+        
+        self.sia = SentimentIntensityAnalyzer()
+        logger.info("✅ Sentiment Analyzer initialized")
+    
+    def analyze_text(self, text: str) -> Dict[str, float]:
+        """
+        Analyze sentiment of a single text.
+        
+        Args:
+            text: Review text to analyze
+            
+        Returns:
+            Dictionary with sentiment scores:
+            {
+                'neg': negative score (0-1),
+                'neu': neutral score (0-1),
+                'pos': positive score (0-1),
+                'compound': compound score (-1 to 1)
+            }
+        """
+        if not text or not isinstance(text, str):
+            return {'neg': 0.0, 'neu': 1.0, 'pos': 0.0, 'compound': 0.0}
+        
+        scores = self.sia.polarity_scores(text)
+        return scores
+    
+    def classify_sentiment(self, compound_score: float) -> str:
+        """
+        Classify sentiment based on compound score.
+        
+        Args:
+            compound_score: Compound sentiment score (-1 to 1)
+            
+        Returns:
+            'positive', 'negative', or 'neutral'
+        """
+        if compound_score >= 0.05:
+            return 'positive'
+        elif compound_score <= -0.05:
+            return 'negative'
+        else:
+            return 'neutral'
+    
+    def analyze_review(self, review_text: str) -> Tuple[str, float, Dict[str, float]]:
+        """
+        Analyze a review and return classification with scores.
+        
+        Args:
+            review_text: Review text
+            
+        Returns:
+            Tuple of (sentiment_label, compound_score, all_scores)
+        """
+        scores = self.analyze_text(review_text)
+        sentiment = self.classify_sentiment(scores['compound'])
+        
+        return sentiment, scores['compound'], scores
+    
+    def analyze_reviews_batch(self, reviews: List[str]) -> List[Dict]:
+        """
+        Analyze multiple reviews at once.
+        
+        Args:
+            reviews: List of review texts
+            
+        Returns:
+            List of sentiment results
+        """
+        results = []
+        
+        for review in reviews:
+            sentiment, compound, scores = self.analyze_review(review)
+            results.append({
+                'sentiment': sentiment,
+                'sentiment_score': compound,
+                'scores': scores
+            })
+        
+        return results
+    
+    def get_sentiment_stats(self, reviews: List[str]) -> Dict:
+        """
+        Get overall sentiment statistics for a list of reviews.
+        
+        Args:
+            reviews: List of review texts
+            
+        Returns:
+            Dictionary with sentiment statistics
+        """
+        results = self.analyze_reviews_batch(reviews)
+        
+        total = len(results)
+        positive = sum(1 for r in results if r['sentiment'] == 'positive')
+        negative = sum(1 for r in results if r['sentiment'] == 'negative')
+        neutral = sum(1 for r in results if r['sentiment'] == 'neutral')
+        
+        avg_score = sum(r['sentiment_score'] for r in results) / total if total > 0 else 0
+        
+        return {
+            'total_reviews': total,
+            'positive': positive,
+            'negative': negative,
+            'neutral': neutral,
+            'positive_pct': (positive / total * 100) if total > 0 else 0,
+            'negative_pct': (negative / total * 100) if total > 0 else 0,
+            'neutral_pct': (neutral / total * 100) if total > 0 else 0,
+            'average_score': round(avg_score, 3)
+        }
+
+
+def test_analyzer():
+    """Test the sentiment analyzer with sample reviews."""
+    analyzer = ReviewSentimentAnalyzer()
+    
+    test_reviews = [
+        "This place was absolutely amazing! The host was super friendly and the location was perfect.",
+        "Terrible experience. The place was dirty and the host was rude.",
+        "It was okay. Nothing special but nothing terrible either.",
+        "Great location but a bit noisy at night. Overall good value for money.",
+        "Beautiful apartment with stunning views! Highly recommend!"
+    ]
+    
+    print("\n" + "="*60)
+    print("TESTING SENTIMENT ANALYZER")
+    print("="*60)
+    
+    for i, review in enumerate(test_reviews, 1):
+        sentiment, score, scores = analyzer.analyze_review(review)
+        
+        print(f"\n{i}. Review: {review[:60]}...")
+        print(f"   Sentiment: {sentiment.upper()} (score: {score:.3f})")
+        print(f"   Breakdown: pos={scores['pos']:.2f}, neu={scores['neu']:.2f}, neg={scores['neg']:.2f}")
+    
+    # Overall stats
+    print("\n" + "="*60)
+    print("OVERALL STATISTICS")
+    print("="*60)
+    stats = analyzer.get_sentiment_stats(test_reviews)
+    print(f"Total reviews: {stats['total_reviews']}")
+    print(f"Positive: {stats['positive']} ({stats['positive_pct']:.1f}%)")
+    print(f"Neutral: {stats['neutral']} ({stats['neutral_pct']:.1f}%)")
+    print(f"Negative: {stats['negative']} ({stats['negative_pct']:.1f}%)")
+    print(f"Average score: {stats['average_score']}")
+    print("="*60)
+
+
+if __name__ == "__main__":
+    test_analyzer()
+</file>
+
+<file path="backend/tests/__init__.py">
+
+</file>
+
+<file path="backend/requirements.txt">
+# Core Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Database
+pymongo>=4.6.0
+
+# Web Framework
+Flask>=3.0.0
+Flask-CORS>=4.0.0
+python-dotenv>=1.0.0
+
+# Machine Learning & NLP
+scikit-learn>=1.3.0
+nltk>=3.8.0
+textblob>=0.17.1
+
+# Word Cloud Generation
+wordcloud>=1.9.0
+Pillow>=10.0.0
+
+# Utilities
+requests>=2.31.0
+tqdm>=4.66.0
+
+# Data validation
+jsonschema>=4.20.0
+</file>
+
+<file path="backend/run.py">
+"""
+Run Flask development server
+"""
+
+from app import create_app
+
+app = create_app('development')
+
+if __name__ == '__main__':
+    print("\n" + "="*60)
+    print("🚀 InnSight API Server Starting...")
+    print("="*60)
+    print(f"API running at: http://localhost:{app.config['API_PORT']}")
+    print("Press CTRL+C to stop")
+    print("="*60 + "\n")
+    
+    app.run(
+        host='0.0.0.0',
+        port=app.config['API_PORT'],
+        debug=app.config['DEBUG']
+    )
+</file>
+
+<file path="backend/test_cleaning.py">
+"""
+Test script to clean a small sample of London data
+"""
+
+import sys
+sys.path.append('.')
+
+from data.config import get_city_paths, get_processed_paths
+from data.data_cleaner import DataCleaner
+import pandas as pd
+
+print("="*60)
+print("TESTING DATA CLEANING")
+print("="*60)
+
+# Initialize cleaner for London
+cleaner = DataCleaner('london')
+
+# Get file paths
+raw_paths = get_city_paths('london')
+
+# Test with first 1000 rows of listings
+print("\n1. Loading sample of listings...")
+df_listings = pd.read_csv(raw_paths['listings'], nrows=1000)
+print(f"Loaded {len(df_listings)} rows")
+
+# Clean it
+print("\n2. Cleaning listings...")
+df_clean = cleaner.clean_listings(df_listings)
+
+print("\n3. Sample of cleaned data:")
+print(df_clean[['id', 'name', 'price', 'latitude', 'longitude', 'city']].head())
+
+print("\n✅ Cleaning test successful!")
+</file>
+
+<file path="backend/test_mongo_query.py">
+from pymongo import MongoClient
+client = MongoClient('mongodb://localhost:27017/')
+db = client['innsight_db']
+total = db.reviews.count_documents({'city': 'london'})
+print(f"Total London reviews: {total:,}")
+sample = db.reviews.find_one({'city': 'london'})
+print(f"\nSample review:")
+print(f"  ID: {sample.get('id')}")
+print(f"  Comments: {sample.get('comments', '')[:100]}...")
+print(f"  Has sentiment: {'sentiment' in sample}")
+client.close()
+</file>
+
+<file path="backend/test_mongodb.py">
+"""
+Quick test to verify MongoDB connection
+"""
+
+from pymongo import MongoClient
+
+try:
+    print("Testing MongoDB connection...")
+    client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=3000)
+    
+    # Test connection
+    client.admin.command('ping')
+    
+    print("✅ MongoDB is running!")
+    print(f"✅ Server version: {client.server_info()['version']}")
+    
+    # List databases
+    print(f"✅ Available databases: {client.list_database_names()}")
+    
+    client.close()
+    
+except Exception as e:
+    print(f"❌ MongoDB connection failed: {e}")
+    print("\nMake sure MongoDB is running:")
+    print("  brew services start mongodb-community")
+</file>
+
+<file path="backend/test_setup.py">
+"""Test script to verify setup"""
+import sys
+import pandas as pd
+import pymongo
+import flask
+import nltk
+
+print("="*50)
+print("✅ SETUP VERIFICATION")
+print("="*50)
+print(f"Python: {sys.version}")
+print(f"Pandas: {pd.__version__}")
+print(f"PyMongo: {pymongo.__version__}")
+print(f"Flask: {flask.__version__}")
+print(f"NLTK: {nltk.__version__}")
+print("="*50)
+print("🎉 SUCCESS! All packages installed!")
+print("="*50)
+</file>
+
+<file path="frontend/css/style.css">
+/* Reset and Base Styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+        'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+    background: #f3f4f6;
+    color: #1f2937;
+}
+
+/* Navbar */
+.navbar {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    color: white;
+    padding: 1rem 0;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.nav-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.logo {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.city-badge {
+    background: rgba(255, 255, 255, 0.2);
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.875rem;
+}
+
+.nav-stats {
+    display: flex;
+    gap: 2rem;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.stat-value {
+    font-size: 1.25rem;
+    font-weight: bold;
+}
+
+.stat-label {
+    font-size: 0.75rem;
+    opacity: 0.9;
+}
+
+/* Main Container */
+.main-container {
+    display: flex;
+    max-width: 1400px;
+    margin: 2rem auto;
+    gap: 2rem;
+    padding: 0 2rem;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 280px;
+    flex-shrink: 0;
+}
+
+.filter-section,
+.quick-stats {
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    margin-bottom: 1.5rem;
+}
+
+.filter-section h3,
+.quick-stats h3 {
+    margin-bottom: 1rem;
+    font-size: 1.125rem;
+    color: #1f2937;
+}
+
+.filter-group {
+    margin-bottom: 1rem;
+}
+
+.filter-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #4b5563;
+}
+
+.price-inputs {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+input[type="number"],
+select {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #d1d5db;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+}
+
+input[type="number"]:focus,
+select:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.btn-primary,
+.btn-secondary {
+    width: 100%;
+    padding: 0.75rem;
+    border: none;
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: #2563eb;
+    color: white;
+    margin-bottom: 0.5rem;
+}
+
+.btn-primary:hover {
+    background: #1d4ed8;
+}
+
+.btn-secondary {
+    background: #f3f4f6;
+    color: #4b5563;
+}
+
+.btn-secondary:hover {
+    background: #e5e7eb;
+}
+
+/* Quick Stats */
+.stat-card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: #f9fafb;
+    border-radius: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.stat-icon {
+    font-size: 2rem;
+}
+
+.stat-title {
+    font-size: 0.75rem;
+    color: #6b7280;
+    margin-bottom: 0.25rem;
+}
+
+.stat-number {
+    font-size: 1.25rem;
+    font-weight: bold;
+    color: #1f2937;
+}
+
+/* Content Area */
+.content {
+    flex: 1;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.section-header h2 {
+    font-size: 1.5rem;
+    color: #1f2937;
+}
+
+.listing-count {
+    font-size: 0.875rem;
+    color: #6b7280;
+}
+
+.listing-count span {
+    font-weight: bold;
+    color: #2563eb;
+}
+
+/* Map */
+.map-section {
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    margin-bottom: 2rem;
+    position: relative;
+}
+
+.map-container {
+    height: 500px;
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.map-legend {
+    position: absolute;
+    bottom: 2rem;
+    right: 2rem;
+    background: white;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+}
+
+.map-legend h4 {
+    font-size: 0.875rem;
+    margin-bottom: 0.5rem;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    margin-bottom: 0.25rem;
+}
+
+.legend-color {
+    width: 1rem;
+    height: 1rem;
+    border-radius: 50%;
+}
+
+/* Dashboard */
+.dashboard-section {
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.dashboard-section h2 {
+    margin-bottom: 1.5rem;
+    font-size: 1.5rem;
+}
+
+.charts-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.chart-card {
+    background: #f9fafb;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+}
+
+.chart-card h3 {
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    color: #4b5563;
+}
+
+.chart-card canvas {
+    max-height: 300px;
+}
+
+/* Word Cloud */
+.wordcloud-section {
+    margin-top: 2rem;
+    padding-top: 2rem;
+    border-top: 1px solid #e5e7eb;
+}
+
+.wordcloud-section h3 {
+    font-size: 1.25rem;
+    margin-bottom: 1rem;
+}
+
+.wordcloud-filters {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.wordcloud-btn {
+    padding: 0.5rem 1rem;
+    border: 2px solid #e5e7eb;
+    background: white;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: all 0.2s;
+}
+
+.wordcloud-btn.active {
+    border-color: #2563eb;
+    background: #eff6ff;
+    color: #2563eb;
+}
+
+.wordcloud-btn:hover {
+    border-color: #2563eb;
+}
+
+.wordcloud-container {
+    min-height: 300px;
+    background: #f9fafb;
+    border-radius: 0.5rem;
+    padding: 2rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+}
+
+.word-item {
+    padding: 0.5rem 1rem;
+    background: white;
+    border-radius: 0.375rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    transition: transform 0.2s;
+    cursor: default;
+}
+
+.word-item:hover {
+    transform: scale(1.1);
+}
+
+/* Loading Overlay */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(255, 255, 255, 0.9);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+}
+
+.loading-overlay.hidden {
+    display: none;
+}
+
+.spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid #f3f4f6;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.loading-overlay p {
+    margin-top: 1rem;
+    color: #4b5563;
+    font-weight: 500;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+    .main-container {
+        flex-direction: column;
+    }
+    
+    .sidebar {
+        width: 100%;
+    }
+    
+    .charts-grid {
+        grid-template-columns: 1fr;
+    }
+}
+</file>
+
+<file path="frontend/js/api.js">
+/**
+ * API Service - Handles all API calls to Flask backend
+ * Uses ES6 async/await and Promises
+ */
+
+const API_BASE_URL = 'http://localhost:5000/api';
+const CITY = 'london';
+
+const API = {
+    /**
+     * Get listings with filters
+     */
+    async getListings(filters = {}) {
+        try {
+            const params = new URLSearchParams();
+            
+            if (filters.minPrice) params.append('min_price', filters.minPrice);
+            if (filters.maxPrice) params.append('max_price', filters.maxPrice);
+            if (filters.roomType) params.append('room_type', filters.roomType);
+            if (filters.neighbourhood) params.append('neighbourhood', filters.neighbourhood);
+            params.append('limit', filters.limit || 1000);
+            
+            const response = await fetch(`${API_BASE_URL}/listings/${CITY}?${params}`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            return data;
+        } catch (error) {
+            console.error('Error fetching listings:', error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get neighbourhoods list
+     */
+    async getNeighbourhoods() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/listings/${CITY}/neighbourhoods`);
+            const data = await response.json();
+            return data.neighbourhoods || [];
+        } catch (error) {
+            console.error('Error fetching neighbourhoods:', error);
+            return [];
+        }
+    },
+
+    /**
+     * Get price statistics
+     */
+    async getPriceStats() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/analytics/${CITY}/price-stats`);
+            const data = await response.json();
+            return data;
+        } catch (error) {
+            console.error('Error fetching price stats:', error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get room type distribution
+     */
+    async getRoomTypeDistribution() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/analytics/${CITY}/room-type-distribution`);
+            const data = await response.json();
+            return data;
+        } catch (error) {
+            console.error('Error fetching room type distribution:', error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get overall sentiment statistics
+     */
+    async getSentiment() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/analytics/${CITY}/sentiment`);
+            const data = await response.json();
+            return data;
+        } catch (error) {
+            console.error('Error fetching sentiment:', error);
+            throw error;
+        }
+    },
+
+    /**
+     * Get sentiment by neighbourhood
+     */
+    async getSentimentByNeighbourhood() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/analytics/${CITY}/sentiment/by-neighbourhood`);
+            const data = await response.json();
+            return data.neighbourhoods || [];
+        } catch (error) {
+            console.error('Error fetching sentiment by neighbourhood:', error);
+            return [];
+        }
+    },
+
+    /**
+     * Get word cloud data
+     */
+    async getWordCloud(sentiment = null, limit = 30) {
+        try {
+            const params = new URLSearchParams();
+            if (sentiment) params.append('sentiment', sentiment);
+            params.append('limit', limit);
+            
+            const response = await fetch(`${API_BASE_URL}/analytics/${CITY}/wordcloud?${params}`);
+            const data = await response.json();
+            return data.words || [];
+        } catch (error) {
+            console.error('Error fetching word cloud:', error);
+            return [];
+        }
+    },
+
+    /**
+     * Get top hosts
+     */
+    async getTopHosts(limit = 10) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/analytics/${CITY}/top-hosts?limit=${limit}`);
+            const data = await response.json();
+            return data.top_hosts || [];
+        } catch (error) {
+            console.error('Error fetching top hosts:', error);
+            return [];
+        }
+    }
+};
+</file>
+
+<file path="frontend/js/app.js">
+/**
+ * Main Application - Orchestrates everything
+ * Uses ES6 features: async/await, arrow functions, template literals
+ */
+
+const App = {
+    currentFilters: {},
+    
+    /**
+     * Initialize the application
+     */
+    async init() {
+        console.log('InnSight Application Starting...');
+        
+        try {
+            // Show loading
+            this.showLoading();
+            
+            // Initialize map
+            MapComponent.init();
+            
+            // Load neighbourhoods into dropdown
+            await this.loadNeighbourhoods();
+            
+            // Load initial data
+            await this.loadData();
+            
+            // Initialize charts
+            await Charts.initAll();
+            
+            // Set up event listeners
+            this.setupEventListeners();
+            
+            // Hide loading
+            this.hideLoading();
+            
+            console.log('Application initialized successfully!');
+        } catch (error) {
+            console.error('Error initializing app:', error);
+            this.hideLoading();
+            alert('Error loading data. Please make sure the API server is running on http://localhost:5000');
+        }
+    },
+
+    /**
+     * Load neighbourhoods into dropdown
+     */
+    async loadNeighbourhoods() {
+        try {
+            const neighbourhoods = await API.getNeighbourhoods();
+            const select = document.getElementById('neighbourhood');
+            
+            neighbourhoods.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                select.appendChild(option);
+            });
+        } catch (error) {
+            console.error('Error loading neighbourhoods:', error);
+        }
+    },
+
+    /**
+     * Load listings data
+     */
+    async loadData(filters = {}) {
+        try {
+            this.showLoading();
+            
+            // Fetch listings
+            const listingsData = await API.getListings(filters);
+            const listings = listingsData.listings || [];
+            
+            // Update listing count
+            document.getElementById('listingCount').textContent = listings.length.toLocaleString();
+            
+            // Add to map
+            MapComponent.addListings(listings);
+            
+            // Update stats
+            await this.updateStats();
+            
+            this.hideLoading();
+        } catch (error) {
+            console.error('Error loading data:', error);
+            this.hideLoading();
+        }
+    },
+
+    /**
+     * Update quick stats
+     */
+    async updateStats() {
+        try {
+            // Get price stats
+            const priceData = await API.getPriceStats();
+            const avgPrice = priceData.overall.avg_price;
+            document.getElementById('avgPrice').textContent = `£${Math.round(avgPrice)}`;
+            
+            // Get sentiment stats
+            const sentimentData = await API.getSentiment();
+            const positivePct = sentimentData.sentiment.positive.percentage;
+            document.getElementById('sentimentScore').textContent = `${positivePct.toFixed(1)}%`;
+            
+        } catch (error) {
+            console.error('Error updating stats:', error);
+        }
+    },
+
+    /**
+     * Set up event listeners
+     */
+    setupEventListeners() {
+        // Apply filters button
+        document.getElementById('applyFilters').addEventListener('click', () => {
+            this.applyFilters();
+        });
+        
+        // Reset filters button
+        document.getElementById('resetFilters').addEventListener('click', () => {
+            this.resetFilters();
+        });
+        
+        // Word cloud filter buttons
+        document.querySelectorAll('.wordcloud-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                // Remove active class from all buttons
+                document.querySelectorAll('.wordcloud-btn').forEach(b => {
+                    b.classList.remove('active');
+                });
+                
+                // Add active class to clicked button
+                e.target.classList.add('active');
+                
+                // Get sentiment
+                const sentiment = e.target.dataset.sentiment;
+                
+                // Update word cloud
+                Charts.createWordCloud(sentiment || null);
+            });
+        });
+        
+        // Enter key on inputs
+        document.querySelectorAll('input, select').forEach(input => {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.applyFilters();
+                }
+            });
+        });
+    },
+
+    /**
+     * Apply filters
+     */
+    async applyFilters() {
+        const filters = {
+            minPrice: document.getElementById('minPrice').value,
+            maxPrice: document.getElementById('maxPrice').value,
+            roomType: document.getElementById('roomType').value,
+            neighbourhood: document.getElementById('neighbourhood').value,
+            limit: 1000
+        };
+        
+        // Remove empty filters
+        Object.keys(filters).forEach(key => {
+            if (!filters[key]) delete filters[key];
+        });
+        
+        this.currentFilters = filters;
+        await this.loadData(filters);
+    },
+
+    /**
+     * Reset filters
+     */
+    async resetFilters() {
+        document.getElementById('minPrice').value = '';
+        document.getElementById('maxPrice').value = '';
+        document.getElementById('roomType').value = '';
+        document.getElementById('neighbourhood').value = '';
+        
+        this.currentFilters = {};
+        await this.loadData();
+    },
+
+    /**
+     * Show loading overlay
+     */
+    showLoading() {
+        document.getElementById('loadingOverlay').classList.remove('hidden');
+    },
+
+    /**
+     * Hide loading overlay
+     */
+    hideLoading() {
+        document.getElementById('loadingOverlay').classList.add('hidden');
+    }
+};
+
+// Initialize app when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    App.init();
+});
+</file>
+
+<file path="frontend/js/charts.js">
+/**
+ * Charts Component - Chart.js visualizations
+ */
+
+const Charts = {
+    priceChart: null,
+    roomTypeChart: null,
+    sentimentChart: null,
+    neighbourhoodChart: null,
+
+    /**
+     * Create price by neighbourhood chart
+     */
+    async createPriceChart() {
+        try {
+            const data = await API.getPriceStats();
+            const neighbourhoods = data.by_neighbourhood.slice(0, 10); // Top 10
+            
+            const ctx = document.getElementById('priceChart').getContext('2d');
+            
+            if (this.priceChart) {
+                this.priceChart.destroy();
+            }
+            
+            this.priceChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: neighbourhoods.map(n => n._id),
+                    datasets: [{
+                        label: 'Average Price (£)',
+                        data: neighbourhoods.map(n => n.avg_price.toFixed(2)),
+                        backgroundColor: '#2563eb',
+                        borderColor: '#1d4ed8',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Price (£)'
+                            }
+                        }
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Error creating price chart:', error);
+        }
+    },
+
+    /**
+     * Create room type distribution chart
+     */
+    async createRoomTypeChart() {
+        try {
+            const data = await API.getRoomTypeDistribution();
+            
+            const ctx = document.getElementById('roomTypeChart').getContext('2d');
+            
+            if (this.roomTypeChart) {
+                this.roomTypeChart.destroy();
+            }
+            
+            this.roomTypeChart = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: data.distribution.map(d => d._id),
+                    datasets: [{
+                        data: data.distribution.map(d => d.count),
+                        backgroundColor: [
+                            '#2563eb',
+                            '#10b981',
+                            '#f59e0b',
+                            '#ef4444'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Error creating room type chart:', error);
+        }
+    },
+
+    /**
+     * Create sentiment chart
+     */
+    async createSentimentChart() {
+        try {
+            const data = await API.getSentiment();
+            const sentiment = data.sentiment;
+            
+            const ctx = document.getElementById('sentimentChart').getContext('2d');
+            
+            if (this.sentimentChart) {
+                this.sentimentChart.destroy();
+            }
+            
+            this.sentimentChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Positive', 'Neutral', 'Negative'],
+                    datasets: [{
+                        data: [
+                            sentiment.positive.count,
+                            sentiment.neutral.count,
+                            sentiment.negative.count
+                        ],
+                        backgroundColor: [
+                            '#10b981',
+                            '#f59e0b',
+                            '#ef4444'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Error creating sentiment chart:', error);
+        }
+    },
+
+    /**
+     * Create top neighbourhoods by sentiment chart
+     */
+    async createNeighbourhoodChart() {
+        try {
+            const data = await API.getSentimentByNeighbourhood();
+            const topNeighbourhoods = data.slice(0, 10);
+            
+            const ctx = document.getElementById('neighbourhoodChart').getContext('2d');
+            
+            if (this.neighbourhoodChart) {
+                this.neighbourhoodChart.destroy();
+            }
+            
+            this.neighbourhoodChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: topNeighbourhoods.map(n => n.neighbourhood),
+                    datasets: [{
+                        label: 'Positive %',
+                        data: topNeighbourhoods.map(n => n.positive_pct),
+                        backgroundColor: '#10b981',
+                        borderColor: '#059669',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: {
+                                display: true,
+                                text: 'Positive Reviews (%)'
+                            }
+                        }
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Error creating neighbourhood chart:', error);
+        }
+    },
+
+    /**
+     * Create word cloud visualization
+     */
+    async createWordCloud(sentiment = 'positive') {
+        try {
+            const words = await API.getWordCloud(sentiment, 30);
+            const container = document.getElementById('wordCloud');
+            
+            // Clear existing content
+            container.innerHTML = '';
+            
+            if (words.length === 0) {
+                container.innerHTML = '<p style="color: #6b7280;">No word data available</p>';
+                return;
+            }
+            
+            // Find max count for scaling
+            const maxCount = Math.max(...words.map(w => w.count));
+            
+            // Create word elements
+            words.forEach(word => {
+                const wordEl = document.createElement('div');
+                wordEl.className = 'word-item';
+                
+                // Scale font size based on frequency
+                const fontSize = 0.75 + (word.count / maxCount) * 1.5;
+                wordEl.style.fontSize = `${fontSize}rem`;
+                
+                // Color based on sentiment
+                let color = '#2563eb';
+                if (sentiment === 'positive') color = '#10b981';
+                if (sentiment === 'negative') color = '#ef4444';
+                wordEl.style.color = color;
+                
+                wordEl.textContent = word.word;
+                wordEl.title = `${word.word}: ${word.count} mentions`;
+                
+                container.appendChild(wordEl);
+            });
+        } catch (error) {
+            console.error('Error creating word cloud:', error);
+        }
+    },
+
+    /**
+     * Initialize all charts
+     */
+    async initAll() {
+        await Promise.all([
+            this.createPriceChart(),
+            this.createRoomTypeChart(),
+            this.createSentimentChart(),
+            this.createNeighbourhoodChart(),
+            this.createWordCloud('positive')
+        ]);
+    }
+};
+</file>
+
+<file path="frontend/js/map.js">
+/**
+ * Map Component - Leaflet map with listings
+ */
+
+let map = null;
+let markersLayer = null;
+
+const MapComponent = {
+    /**
+     * Initialize the map
+     */
+    init() {
+        // Create map centered on London
+        map = L.map('map').setView([51.5074, -0.1278], 11);
+        
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            maxZoom: 18
+        }).addTo(map);
+        
+        // Create layer group for markers
+        markersLayer = L.layerGroup().addTo(map);
+        
+        console.log('Map initialized');
+    },
+
+    /**
+     * Get marker color based on price
+     */
+    getMarkerColor(price) {
+        if (!price || price === null) return '#9ca3af'; // gray
+        if (price > 300) return '#ef4444'; // red
+        if (price > 150) return '#f59e0b'; // orange
+        return '#10b981'; // green
+    },
+
+    /**
+     * Create custom marker icon
+     */
+    createMarkerIcon(price) {
+        const color = this.getMarkerColor(price);
+        
+        return L.divIcon({
+            className: 'custom-marker',
+            html: `
+                <div style="
+                    background-color: ${color};
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 50%;
+                    border: 2px solid white;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                "></div>
+            `,
+            iconSize: [24, 24],
+            iconAnchor: [12, 12]
+        });
+    },
+
+    /**
+     * Add listings to map
+     */
+    addListings(listings) {
+        // Clear existing markers
+        markersLayer.clearLayers();
+        
+        if (!listings || listings.length === 0) {
+            console.log('No listings to display on map');
+            return;
+        }
+        
+        // Add markers for each listing
+        listings.forEach(listing => {
+            if (!listing.latitude || !listing.longitude) return;
+            
+            const marker = L.marker(
+                [listing.latitude, listing.longitude],
+                { icon: this.createMarkerIcon(listing.price) }
+            );
+            
+            // Create popup content
+            const popupContent = `
+                <div style="font-family: sans-serif;">
+                    <h3 style="margin: 0 0 8px 0; font-size: 14px; font-weight: bold;">
+                        ${listing.name || 'Unnamed Listing'}
+                    </h3>
+                    <p style="margin: 0 0 4px 0; font-size: 12px; color: #6b7280;">
+                        ${listing.neighbourhood_cleansed || 'Unknown area'}
+                    </p>
+                    <p style="margin: 0 0 4px 0; font-size: 14px; font-weight: bold; color: #2563eb;">
+                        £${listing.price ? listing.price.toFixed(0) : 'N/A'}/night
+                    </p>
+                    <p style="margin: 0 0 4px 0; font-size: 12px; color: #6b7280;">
+                        ${listing.room_type || 'Unknown type'}
+                    </p>
+                    ${listing.review_scores_rating ? `
+                        <p style="margin: 0; font-size: 12px;">
+                            ⭐ ${listing.review_scores_rating.toFixed(1)} 
+                            (${listing.number_of_reviews || 0} reviews)
+                        </p>
+                    ` : ''}
+                </div>
+            `;
+            
+            marker.bindPopup(popupContent);
+            marker.addTo(markersLayer);
+        });
+        
+        console.log(`Added ${listings.length} markers to map`);
+    },
+
+    /**
+     * Clear all markers
+     */
+    clearMarkers() {
+        if (markersLayer) {
+            markersLayer.clearLayers();
+        }
+    }
+};
+</file>
+
+<file path="frontend/index.html">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InnSight - Smart Airbnb Explorer</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <span class="logo">🏠 InnSight</span>
+                <span class="city-badge">London</span>
+            </div>
+            <div class="nav-stats">
+                <div class="stat-item">
+                    <span class="stat-value" id="totalListings">96,871</span>
+                    <span class="stat-label">Listings</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="totalReviews">2M+</span>
+                    <span class="stat-label">Reviews</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="positivePercent">84.4%</span>
+                    <span class="stat-label">Positive</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Sidebar with Filters -->
+        <aside class="sidebar">
+            <div class="filter-section">
+                <h3>Filters</h3>
+                
+                <!-- Price Filter -->
+                <div class="filter-group">
+                    <label>Price Range</label>
+                    <div class="price-inputs">
+                        <input type="number" id="minPrice" placeholder="Min £" min="0">
+                        <span>-</span>
+                        <input type="number" id="maxPrice" placeholder="Max £" min="0">
+                    </div>
+                </div>
+
+                <!-- Room Type Filter -->
+                <div class="filter-group">
+                    <label>Room Type</label>
+                    <select id="roomType">
+                        <option value="">All Types</option>
+                        <option value="Entire home/apt">Entire home/apt</option>
+                        <option value="Private room">Private room</option>
+                        <option value="Shared room">Shared room</option>
+                        <option value="Hotel room">Hotel room</option>
+                    </select>
+                </div>
+
+                <!-- Neighbourhood Filter -->
+                <div class="filter-group">
+                    <label>Neighbourhood</label>
+                    <select id="neighbourhood">
+                        <option value="">All Neighbourhoods</option>
+                    </select>
+                </div>
+
+                <!-- Apply Button -->
+                <button id="applyFilters" class="btn-primary">Apply Filters</button>
+                <button id="resetFilters" class="btn-secondary">Reset</button>
+            </div>
+
+            <!-- Quick Stats -->
+            <div class="quick-stats">
+                <h3>Quick Stats</h3>
+                <div class="stat-card">
+                    <div class="stat-icon">💰</div>
+                    <div class="stat-info">
+                        <div class="stat-title">Avg Price</div>
+                        <div class="stat-number" id="avgPrice">£230</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">😊</div>
+                    <div class="stat-info">
+                        <div class="stat-title">Sentiment</div>
+                        <div class="stat-number" id="sentimentScore">84.4%</div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Map Section -->
+            <section class="map-section">
+                <div class="section-header">
+                    <h2>📍 Interactive Map</h2>
+                    <div class="listing-count">
+                        Showing <span id="listingCount">0</span> listings
+                    </div>
+                </div>
+                <div id="map" class="map-container"></div>
+                <div class="map-legend">
+                    <h4>Price Range</h4>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #10b981;"></span>
+                        £0 - £150
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #f59e0b;"></span>
+                        £150 - £300
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #ef4444;"></span>
+                        £300+
+                    </div>
+                </div>
+            </section>
+
+            <!-- Dashboard Section -->
+            <section class="dashboard-section">
+                <h2>📊 Analytics Dashboard</h2>
+                
+                <div class="charts-grid">
+                    <!-- Price Chart -->
+                    <div class="chart-card">
+                        <h3>Price by Neighbourhood</h3>
+                        <canvas id="priceChart"></canvas>
+                    </div>
+
+                    <!-- Room Type Chart -->
+                    <div class="chart-card">
+                        <h3>Room Type Distribution</h3>
+                        <canvas id="roomTypeChart"></canvas>
+                    </div>
+
+                    <!-- Sentiment Chart -->
+                    <div class="chart-card">
+                        <h3>Sentiment Analysis</h3>
+                        <canvas id="sentimentChart"></canvas>
+                    </div>
+
+                    <!-- Top Neighbourhoods -->
+                    <div class="chart-card">
+                        <h3>Top Neighbourhoods by Sentiment</h3>
+                        <canvas id="neighbourhoodChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Word Cloud Section -->
+                <div class="wordcloud-section">
+                    <h3>☁️ Most Common Words in Reviews</h3>
+                    <div class="wordcloud-filters">
+                        <button class="wordcloud-btn active" data-sentiment="positive">
+                            😊 Positive
+                        </button>
+                        <button class="wordcloud-btn" data-sentiment="negative">
+                            😞 Negative
+                        </button>
+                        <button class="wordcloud-btn" data-sentiment="">
+                            😐 All
+                        </button>
+                    </div>
+                    <div id="wordCloud" class="wordcloud-container"></div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>Loading data...</p>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Our JS Files -->
+    <script src="js/api.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
+</file>
+
+<file path=".gitignore">
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# Data files - DON'T COMMIT LARGE CSV FILES!
+backend/data/raw/
+*.csv
+*.csv.gz
+*.geojson
+
+# Keep folder structure but not the actual data files
+!backend/data/raw/.gitkeep
+backend/data/processed/*
+!backend/data/processed/.gitkeep
+
+# MongoDB
+mongodb_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Node/React
+node_modules/
+build/
+dist/
+.npm
+.eslintcache
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ML models
+backend/ml/models/*.pkl
+backend/ml/models/*.h5
+!backend/ml/models/.gitkeep
+</file>
+
+<file path="API_EXAMPLES.md">
+# 📡 API Examples - InnSight
+
+Complete examples for all API endpoints with sample responses.
+
+**Base URL:** `http://localhost:5000/api`
+
+---
+
+## 🏠 **Listings Endpoints**
+
+### **1. Get Listings for a City**
+
+```bash
+curl http://localhost:5000/api/listings/london?limit=5
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "count": 5,
+  "listings": [
+    {
+      "id": 13913,
+      "name": "Holiday London DB Room",
+      "latitude": 51.56861,
+      "longitude": -0.1127,
+      "price": 70.0,
+      "room_type": "Private room",
+      "neighbourhood_cleansed": "Islington",
+      "review_scores_rating": 4.85
+    }
+  ]
+}
+```
+
+### **2. Filter by Price**
+
+```bash
+curl "http://localhost:5000/api/listings/london?min_price=50&max_price=150&limit=10"
+```
+
+### **3. Filter by Room Type**
+
+```bash
+curl "http://localhost:5000/api/listings/london?room_type=Entire home/apt&limit=10"
+```
+
+### **4. Filter by Neighbourhood**
+
+```bash
+curl "http://localhost:5000/api/listings/london?neighbourhood=Westminster&limit=10"
+```
+
+### **5. Get Single Listing Detail**
+
+```bash
+curl http://localhost:5000/api/listings/london/13913
+```
+
+**Response:**
+```json
+{
+  "id": 13913,
+  "name": "Holiday London DB Room",
+  "description": "My bright double bedroom...",
+  "host_name": "John",
+  "price": 70.0,
+  "sentiment": {
+    "positive": 45,
+    "neutral": 8,
+    "negative": 2
+  }
+}
+```
+
+### **6. Get Neighbourhoods List**
+
+```bash
+curl http://localhost:5000/api/listings/london/neighbourhoods
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "neighbourhoods": [
+    "Barking and Dagenham",
+    "Barnet",
+    "Bexley",
+    "Brent",
+    "Bromley",
+    "Camden",
+    ...
+  ]
+}
+```
+
+### **7. Get Room Types**
+
+```bash
+curl http://localhost:5000/api/listings/london/room-types
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "room_types": [
+    "Entire home/apt",
+    "Hotel room",
+    "Private room",
+    "Shared room"
+  ]
+}
+```
+
+---
+
+## 📊 **Analytics Endpoints**
+
+### **1. Price Statistics**
+
+```bash
+curl http://localhost:5000/api/analytics/london/price-stats
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "overall": {
+    "avg_price": 229.92,
+    "min_price": 7.0,
+    "max_price": 1085147.0,
+    "count": 61963
+  },
+  "by_neighbourhood": [
+    {
+      "_id": "Tower Hamlets",
+      "avg_price": 430.91,
+      "min_price": 10.0,
+      "max_price": 1085147.0,
+      "count": 4275
+    },
+    {
+      "_id": "Westminster",
+      "avg_price": 342.14,
+      "count": 8443
+    }
+  ]
+}
+```
+
+### **2. Room Type Distribution**
+
+```bash
+curl http://localhost:5000/api/analytics/london/room-type-distribution
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "total_listings": 96871,
+  "distribution": [
+    {
+      "_id": "Entire home/apt",
+      "count": 62907,
+      "percentage": 64.9,
+      "avg_price": 279.35
+    },
+    {
+      "_id": "Private room",
+      "count": 33643,
+      "percentage": 34.7,
+      "avg_price": 121.71
+    }
+  ]
+}
+```
+
+### **3. Top Hosts**
+
+```bash
+curl http://localhost:5000/api/analytics/london/top-hosts
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "top_hosts": [
+    {
+      "_id": 446820235,
+      "host_name": "LuxurybookingsFZE",
+      "listing_count": 500,
+      "avg_price": 485.26,
+      "avg_rating": 4.53
+    },
+    {
+      "_id": 314162972,
+      "host_name": "Blueground",
+      "listing_count": 405,
+      "avg_price": 348.20,
+      "avg_rating": 4.35
+    }
+  ]
+}
+```
+
+### **4. Overall Sentiment Statistics**
+
+```bash
+curl http://localhost:5000/api/analytics/london/sentiment
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "total_reviews": 2068845,
+  "sentiment": {
+    "positive": {
+      "count": 1745163,
+      "percentage": 84.4,
+      "avg_score": 0.843
+    },
+    "neutral": {
+      "count": 214080,
+      "percentage": 10.3,
+      "avg_score": 0.0
+    },
+    "negative": {
+      "count": 109602,
+      "percentage": 5.3,
+      "avg_score": -0.571
+    }
+  }
+}
+```
+
+### **5. Sentiment by Neighbourhood**
+
+```bash
+curl http://localhost:5000/api/analytics/london/sentiment/by-neighbourhood
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "neighbourhoods": [
+    {
+      "neighbourhood": "Richmond upon Thames",
+      "total_reviews": 36260,
+      "positive": 34122,
+      "positive_pct": 94.1,
+      "neutral": 1399,
+      "neutral_pct": 3.9,
+      "negative": 739,
+      "negative_pct": 2.0,
+      "avg_sentiment_score": 0.812
+    },
+    {
+      "neighbourhood": "Westminster",
+      "total_reviews": 283989,
+      "positive": 232062,
+      "positive_pct": 81.7,
+      "neutral": 35198,
+      "neutral_pct": 12.4,
+      "negative": 16729,
+      "negative_pct": 5.9,
+      "avg_sentiment_score": 0.649
+    }
+  ]
+}
+```
+
+### **6. Word Cloud - Positive Words**
+
+```bash
+curl "http://localhost:5000/api/analytics/london/wordcloud?sentiment=positive&limit=20"
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "sentiment": "positive",
+  "neighbourhood": null,
+  "words": [
+    {"word": "stay", "count": 5698},
+    {"word": "great", "count": 5468},
+    {"word": "london", "count": 4901},
+    {"word": "place", "count": 4078},
+    {"word": "room", "count": 3404},
+    {"word": "location", "count": 3179},
+    {"word": "clean", "count": 2925},
+    {"word": "host", "count": 2802},
+    {"word": "nice", "count": 2751},
+    {"word": "lovely", "count": 2327}
+  ]
+}
+```
+
+### **7. Word Cloud - Negative Words**
+
+```bash
+curl "http://localhost:5000/api/analytics/london/wordcloud?sentiment=negative&limit=10"
+```
+
+### **8. Word Cloud for Specific Neighbourhood**
+
+```bash
+curl "http://localhost:5000/api/analytics/london/wordcloud?sentiment=positive&neighbourhood=Camden&limit=15"
+```
+
+### **9. Occupancy Statistics**
+
+```bash
+curl http://localhost:5000/api/analytics/london/occupancy
+```
+
+**Response:**
+```json
+{
+  "city": "london",
+  "by_month": [
+    {
+      "_id": "2024-12",
+      "total_days": 850000,
+      "booked_days": 425000,
+      "occupancy_rate": 50.0
+    },
+    {
+      "_id": "2025-01",
+      "total_days": 900000,
+      "booked_days": 495000,
+      "occupancy_rate": 55.0
+    }
+  ]
+}
+```
+
+---
+
+## 🔥 **Advanced Query Examples**
+
+### **Find Cheap Listings in Happy Neighbourhoods**
+
+```bash
+# 1. Get happiest neighbourhoods
+curl http://localhost:5000/api/analytics/london/sentiment/by-neighbourhood | jq '.neighbourhoods[0:5]'
+
+# 2. Find cheap listings in Richmond upon Thames
+curl "http://localhost:5000/api/listings/london?neighbourhood=Richmond upon Thames&max_price=100&limit=20"
+```
+
+### **Compare Price vs Sentiment**
+
+```bash
+# Get both datasets
+curl http://localhost:5000/api/analytics/london/price-stats > prices.json
+curl http://localhost:5000/api/analytics/london/sentiment/by-neighbourhood > sentiment.json
+```
+
+### **Find Most Positive Reviews for a Neighbourhood**
+
+```bash
+# Step 1: Get listings in Camden
+curl "http://localhost:5000/api/listings/london?neighbourhood=Camden&limit=100" > camden_listings.json
+
+# Step 2: Check sentiment for each listing
+curl http://localhost:5000/api/listings/london/13913
+```
+
+### **Export Data to CSV**
+
+```bash
+# Get listings and convert to CSV
+curl "http://localhost:5000/api/listings/london?limit=1000" | \
+  jq -r '.listings[] | [.id, .name, .price, .neighbourhood_cleansed] | @csv' > listings.csv
+```
+
+---
+
+## 🎨 **Frontend Integration Examples**
+
+### **JavaScript/Fetch**
+
+```javascript
+// Get sentiment stats
+fetch('http://localhost:5000/api/analytics/london/sentiment')
+  .then(res => res.json())
+  .then(data => {
+    console.log(`Positive: ${data.sentiment.positive.percentage}%`);
+  });
+```
+
+### **React/Axios**
+
+```javascript
+import axios from 'axios';
+
+const API_BASE = 'http://localhost:5000/api';
+
+// Get listings with filters
+const fetchListings = async (filters) => {
+  const params = new URLSearchParams(filters);
+  const response = await axios.get(`${API_BASE}/listings/london?${params}`);
+  return response.data.listings;
+};
+
+// Get sentiment by neighbourhood
+const fetchSentiment = async () => {
+  const response = await axios.get(`${API_BASE}/analytics/london/sentiment/by-neighbourhood`);
+  return response.data.neighbourhoods;
+};
+```
+
+### **Python/Requests**
+
+```python
+import requests
+
+API_BASE = 'http://localhost:5000/api'
+
+# Get price statistics
+response = requests.get(f'{API_BASE}/analytics/london/price-stats')
+data = response.json()
+
+print(f"Average price: £{data['overall']['avg_price']:.2f}")
+```
+
+---
+
+## 📈 **Performance Notes**
+
+- Most endpoints return in **< 100ms**
+- `sentiment/by-neighbourhood` takes **~2-3 seconds** (processes all reviews)
+- `wordcloud` takes **~1-2 seconds** (processes text)
+- Use `limit` parameter to reduce response size
+- Responses are not cached (add Redis for production)
+
+---
+
+## 🔒 **Error Responses**
+
+### **404 Not Found**
+```json
+{
+  "error": "Listing not found"
+}
+```
+
+### **400 Bad Request**
+```json
+{
+  "error": "Invalid parameter: limit must be between 1 and 5000"
+}
+```
+
+### **500 Internal Server Error**
+```json
+{
+  "error": "Database connection failed"
+}
+```
+
+---
+
+## 💡 **Tips**
+
+1. **Use `jq` for pretty JSON**: `curl ... | jq`
+2. **Save responses**: `curl ... > output.json`
+3. **Test incrementally**: Start with simple queries
+4. **Check server logs**: Look at `run.py` output for errors
+5. **URL encode special characters**: Use `%20` for spaces
+
+---
+
+**All endpoints tested and working! ✅**
+</file>
+
+<file path="QUICK_START.md">
+# 🚀 Quick Start Guide - InnSight
+
+**Get InnSight running in 30 minutes!**
+
+---
+
+## ✅ **What You Need**
+
+- Mac/Linux computer
+- Python 3.9+
+- MongoDB 7.0+
+- Terminal access
+- 5GB free disk space
+
+---
+
+## 📋 **Step-by-Step Setup**
+
+### **1. Clone & Setup Python (5 mins)**
+
+```bash
+# Navigate to your projects folder
+cd ~
+git clone <repo-url> innsight-solo
+cd innsight-solo/backend
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies (takes 2-3 minutes)
+pip install -r requirements.txt
+
+# Download NLTK data
+python -c "import nltk; nltk.download('vader_lexicon')"
+```
+
+---
+
+### **2. Start MongoDB (2 mins)**
+
+```bash
+# Start MongoDB server
+mongod --dbpath /usr/local/var/mongodb --logpath /usr/local/var/log/mongodb/mongo.log --fork
+
+# Verify it's running
+python test_mongodb.py
+# Should output: "✅ MongoDB is running!"
+```
+
+---
+
+### **3. Download Data (10 mins)**
+
+**Option A: Browser Download (Easier)**
+1. Go to: http://insideairbnb.com/get-the-data/
+2. Find "London, England"
+3. Download: `listings.csv.gz`, `reviews.csv.gz`, `neighbourhoods.geojson`
+4. Move files to: `backend/data/raw/london/`
+5. Unzip: `gunzip *.gz`
+
+**Option B: Terminal Download**
+```bash
+cd backend/data/raw/london
+
+curl -O http://data.insideairbnb.com/.../listings.csv.gz
+curl -O http://data.insideairbnb.com/.../reviews.csv.gz
+curl -O http://data.insideairbnb.com/.../neighbourhoods.geojson
+
+gunzip *.gz
+```
+
+---
+
+### **4. Process Data (8 mins)**
+
+```bash
+cd ~/innsight-solo/backend
+
+# Clean the data (takes 5-8 minutes)
+python -m data.etl_pipeline london --skip-calendar
+
+# Expected output:
+# ✅ Listings: 96,871 rows
+# ✅ Reviews: 2,068,845 rows
+```
+
+---
+
+### **5. Load MongoDB (5 mins)**
+
+```bash
+# Load cleaned data into database
+python -m data.mongodb_loader london --drop
+
+# Expected output:
+# ✅ Inserted 96,871 listings
+# ✅ Inserted 2,068,845 reviews
+```
+
+---
+
+### **6. Add Sentiment (10-15 mins)**
+
+```bash
+cd ml
+
+# Analyze all reviews (grab a coffee! ☕)
+python add_sentiment_to_db.py london
+
+# Progress bar will show:
+# Processing reviews: 100%|████████| 2,068,845/2,068,845
+
+# Expected output:
+# ✅ Positive: 84.4%
+# ✅ Neutral: 10.3%
+# ✅ Negative: 5.3%
+```
+
+---
+
+### **7. Start API Server**
+
+```bash
+cd ~/innsight-solo/backend
+python run.py
+
+# Output:
+# 🚀 InnSight API Server Starting...
+# API running at: http://localhost:5000
+```
+
+---
+
+### **8. Test It! 🎉**
+
+**Open a new terminal:**
+
+```bash
+# Test health
+curl http://localhost:5000/health
+
+# Test sentiment stats
+curl http://localhost:5000/api/analytics/london/sentiment
+
+# Test listings
+curl http://localhost:5000/api/listings/london?limit=5
+```
+
+**Success!** If you see JSON data, you're done! ✅
+
+---
+
+## 🎯 **Try These Cool Endpoints**
+
+```bash
+# Happiest neighbourhoods
+curl http://localhost:5000/api/analytics/london/sentiment/by-neighbourhood
+
+# Price comparison
+curl http://localhost:5000/api/analytics/london/price-stats
+
+# Most common positive words
+curl "http://localhost:5000/api/analytics/london/wordcloud?sentiment=positive&limit=10"
+
+# Room type breakdown
+curl http://localhost:5000/api/analytics/london/room-type-distribution
+
+# Top hosts
+curl http://localhost:5000/api/analytics/london/top-hosts
+```
+
+---
+
+## 🐛 **Troubleshooting**
+
+### **MongoDB won't start**
+```bash
+# Check if it's already running
+ps aux | grep mongod
+
+# Kill existing process
+killall mongod
+
+# Start fresh
+mongod --dbpath /usr/local/var/mongodb --logpath /usr/local/var/log/mongodb/mongo.log --fork
+```
+
+### **Python package errors**
+```bash
+# Upgrade pip
+pip install --upgrade pip
+
+# Reinstall requirements
+pip install -r requirements.txt --force-reinstall
+```
+
+### **"Module not found" errors**
+```bash
+# Make sure venv is activated
+source venv/bin/activate
+
+# You should see (venv) in your prompt
+```
+
+### **API returns empty data**
+```bash
+# Check if data was loaded
+python test_mongo_query.py
+
+# Should show: "Total London reviews: 2,068,845"
+```
+
+---
+
+## 📊 **What You Built**
+
+You now have:
+- ✅ 96,871 London Airbnb listings in database
+- ✅ 2,068,845 reviews with AI sentiment analysis
+- ✅ RESTful API with 10+ endpoints
+- ✅ Production-ready backend
+
+**Total setup time: ~30-45 minutes**
+
+---
+
+## 🎨 **Next Steps**
+
+### **Build the Frontend**
+- React app with interactive map
+- Dashboard with charts
+- Filters and search
+- Word cloud visualization
+
+### **Add More Cities**
+- Paris
+- Amsterdam
+- Barcelona
+
+### **Deploy**
+- Docker containerization
+- Cloud hosting (AWS/Heroku)
+- Domain & SSL certificate
+
+---
+
+## 💡 **Pro Tips**
+
+1. **Keep MongoDB running** - It uses minimal resources
+2. **Save API examples** - Bookmark working curl commands
+3. **Monitor logs** - Check `run.py` output for errors
+4. **Backup data** - MongoDB data in `/usr/local/var/mongodb`
+
+---
+
+## 🆘 **Need Help?**
+
+1. Check the main README.md for detailed docs
+2. Review error messages carefully
+3. Verify each step completed successfully
+4. Test components individually
+
+---
+
+**You're ready to explore 2 million Airbnb reviews with AI! 🚀**
+</file>
+
+<file path="README.md">
+# InnSight - Smart Airbnb Explorer
+
+> An intelligent data visualization platform for exploring Airbnb listings with ML-powered sentiment analysis
+
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
+[![Flask](https://img.shields.io/badge/Flask-3.0+-green.svg)](https://flask.palletsprojects.com/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-7.0+-brightgreen.svg)](https://www.mongodb.com/)
+[![License](https://img.shields.io/badge/License-Educational-yellow.svg)](LICENSE)
+
+---
+
+## 🎯 **Project Overview**
+
+InnSight analyzes over **2 million Airbnb reviews** using natural language processing to help travelers make informed decisions. The platform combines geographic mapping, pricing analytics, and machine learning-powered sentiment analysis to transform raw data into actionable insights.
+
+### **Key Features**
+
+- 🗺️ **Interactive Map** - Visualize 96,871 London listings with geolocation
+- 📊 **Analytics Dashboard** - Price trends, room types, occupancy rates
+- 🤖 **ML Sentiment Analysis** - 2,068,845 reviews analyzed (84.4% positive!)
+- 🏘️ **Neighborhood Insights** - Compare sentiment across 33 London neighborhoods
+- ☁️ **Word Clouds** - Most common positive/negative review keywords
+- 🏆 **Top Hosts** - Identify super-hosts with best reviews
+
+---
+
+## 📈 **Project Statistics**
+
+| Metric | Count |
+|--------|-------|
+| **Listings Processed** | 96,871 |
+| **Reviews Analyzed** | 2,068,845 |
+| **Positive Reviews** | 1,745,163 (84.4%) |
+| **Neutral Reviews** | 214,080 (10.3%) |
+| **Negative Reviews** | 109,602 (5.3%) |
+| **Neighborhoods Covered** | 33 |
+| **API Endpoints** | 10+ |
+| **Average Sentiment Score** | 0.843 / 1.0 |
+
+---
+
+## 🏗️ **Architecture**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         FRONTEND                             │
+│              React + Leaflet + Recharts                      │
+│                    (To Be Built)                             │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ HTTP REST API
+┌─────────────────────▼───────────────────────────────────────┐
+│                    FLASK API SERVER                          │
+│  - Listings endpoints (/api/listings/:city)                 │
+│  - Analytics endpoints (/api/analytics/:city/...)           │
+│  - Sentiment aggregation                                     │
+│  - Word cloud generation                                     │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│                    MONGODB DATABASE                          │
+│  Collections:                                                │
+│  - listings (96,871 docs)                                   │
+│  - reviews (2,068,845 docs with sentiment)                  │
+│  - calendar (occupancy data)                                │
+│  - neighbourhoods (GeoJSON boundaries)                      │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│                    ETL PIPELINE                              │
+│  1. Extract: Download CSV from InsideAirbnb                 │
+│  2. Transform: Clean, validate, enrich                      │
+│  3. Load: Insert into MongoDB with indexes                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🛠️ **Tech Stack**
+
+### **Backend**
+- **Python 3.9+** - Core language
+- **Flask 3.0** - REST API framework
+- **Flask-CORS** - Cross-origin resource sharing
+- **PyMongo 4.6** - MongoDB driver
+- **Pandas 2.0** - Data processing
+- **NLTK 3.9** - Natural language processing
+- **VADER** - Sentiment analysis model
+
+### **Database**
+- **MongoDB 7.0** - NoSQL document database
+- **Indexes** - Optimized queries on city, sentiment, price
+
+### **Machine Learning**
+- **VADER SentimentIntensityAnalyzer** - Pre-trained sentiment model
+- **Compound Score Thresholding** - Classification logic
+  - Positive: score ≥ 0.05
+  - Negative: score ≤ -0.05
+  - Neutral: -0.05 < score < 0.05
+
+### **Data Source**
+- **Inside Airbnb** - http://insideairbnb.com/get-the-data/
+- Dataset: London (December 2024)
+- License: Creative Commons CC0 1.0 Universal
+
+---
+
+## 📂 **Project Structure**
+
+```
+innsight-solo/
+├── backend/
+│   ├── app/                      # Flask application
+│   │   ├── __init__.py          # App factory
+│   │   ├── config.py            # Configuration
+│   │   ├── database.py          # MongoDB connection
+│   │   └── routes/
+│   │       ├── listings.py      # Listings API
+│   │       └── analytics.py     # Analytics API
+│   ├── data/                     # ETL pipeline
+│   │   ├── config.py            # Data config
+│   │   ├── utils.py             # Cleaning utilities
+│   │   ├── data_cleaner.py      # Data cleaning logic
+│   │   ├── etl_pipeline.py      # ETL orchestrator
+│   │   └── mongodb_loader.py    # Database loader
+│   ├── ml/                       # Machine learning
+│   │   ├── sentiment_analyzer.py         # Sentiment analysis
+│   │   └── add_sentiment_to_db.py       # Batch processing
+│   ├── tests/                    # Unit tests
+│   ├── requirements.txt         # Python dependencies
+│   └── run.py                   # Server entry point
+├── frontend/                     # React app (to be built)
+├── docs/                         # Documentation
+└── README.md                     # This file
+```
+
+---
+
+## 🚀 **Getting Started**
+
+### **Prerequisites**
+
+- Python 3.9 or higher
+- MongoDB 7.0 or higher
+- 4GB RAM minimum
+- 5GB free disk space
+
+### **Installation**
+
+#### 1. Clone the Repository
+
+```bash
+git clone <your-repo-url>
+cd innsight-solo
+```
+
+#### 2. Set Up Python Environment
+
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+pip install -r requirements.txt
+
+# Download NLTK data
+python -c "import nltk; nltk.download('vader_lexicon')"
+```
+
+#### 3. Start MongoDB
+
+```bash
+# Option A: Local installation
+mongod --dbpath /usr/local/var/mongodb --logpath /usr/local/var/log/mongodb/mongo.log --fork
+
+# Option B: Docker
+docker run -d -p 27017:27017 --name innsight-mongo mongo:7.0
+```
+
+#### 4. Configure Environment
+
+```bash
+# Create .env file
+cat > .env << EOF
+MONGO_URI=mongodb://localhost:27017/
+FLASK_ENV=development
+FLASK_DEBUG=True
+SECRET_KEY=your-secret-key
+API_PORT=5000
+EOF
+```
+
+---
+
+## 📥 **Data Setup**
+
+### **Download Data**
+
+1. Go to http://insideairbnb.com/get-the-data/
+2. Find "London, England, United Kingdom"
+3. Download these 4 files:
+   - `listings.csv.gz`
+   - `reviews.csv.gz`
+   - `calendar.csv.gz`
+   - `neighbourhoods.geojson`
+
+4. Place files in: `backend/data/raw/london/`
+
+### **Run ETL Pipeline**
+
+```bash
+cd backend
+
+# Process listings and reviews (skip large calendar file)
+python -m data.etl_pipeline london --skip-calendar
+```
+
+**Expected output:**
+```
+✅ Listings: 96,871 rows
+✅ Reviews: 2,068,845 rows
+```
+
+### **Load into MongoDB**
+
+```bash
+# Load cleaned data into database
+python -m data.mongodb_loader london --drop
+```
+
+**Expected output:**
+```
+✅ Inserted 96,871 listings
+✅ Inserted 2,068,845 reviews
+✅ Indexes created
+```
+
+### **Add Sentiment Analysis**
+
+```bash
+cd ml
+
+# Analyze all 2M reviews (takes 10-15 minutes)
+python add_sentiment_to_db.py london
+```
+
+**Expected output:**
+```
+✅ Processed: 2,068,845 reviews
+✅ Positive: 84.4%
+✅ Neutral: 10.3%
+✅ Negative: 5.3%
+```
+
+---
+
+## 🖥️ **Running the Application**
+
+### **Start API Server**
+
+```bash
+cd backend
+source venv/bin/activate
+python run.py
+```
+
+Server runs at: **http://localhost:5000**
+
+### **Test Endpoints**
+
+```bash
+# Health check
+curl http://localhost:5000/health
+
+# Get sentiment statistics
+curl http://localhost:5000/api/analytics/london/sentiment
+
+# Get listings
+curl http://localhost:5000/api/listings/london?limit=10
+
+# Get sentiment by neighbourhood
+curl http://localhost:5000/api/analytics/london/sentiment/by-neighbourhood
+
+# Get word cloud data (positive words)
+curl "http://localhost:5000/api/analytics/london/wordcloud?sentiment=positive&limit=20"
+```
+
+---
+
+## 📡 **API Documentation**
+
+### **Base URL**
+```
+http://localhost:5000/api
+```
+
+### **Endpoints**
+
+#### **Listings**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/listings/:city` | Get all listings with filters |
+| GET | `/listings/:city/:id` | Get single listing detail |
+| GET | `/listings/:city/neighbourhoods` | List all neighbourhoods |
+| GET | `/listings/:city/room-types` | List all room types |
+
+**Query Parameters for `/listings/:city`:**
+- `min_price` - Minimum price filter
+- `max_price` - Maximum price filter
+- `room_type` - Room type filter
+- `neighbourhood` - Neighbourhood filter
+- `limit` - Max results (default: 1000, max: 5000)
+
+#### **Analytics**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/analytics/:city/price-stats` | Price statistics |
+| GET | `/analytics/:city/room-type-distribution` | Room type breakdown |
+| GET | `/analytics/:city/occupancy` | Monthly occupancy rates |
+| GET | `/analytics/:city/top-hosts` | Top 10 hosts by listings |
+| GET | `/analytics/:city/sentiment` | Overall sentiment stats |
+| GET | `/analytics/:city/sentiment/by-neighbourhood` | Sentiment by area |
+| GET | `/analytics/:city/wordcloud` | Word frequency data |
+
+**Query Parameters for `/wordcloud`:**
+- `sentiment` - Filter by sentiment (positive/negative/neutral)
+- `neighbourhood` - Filter by neighbourhood
+- `limit` - Number of words (default: 100)
+
+---
+
+## 🔬 **Sentiment Analysis Details**
+
+### **Model: VADER (Valence Aware Dictionary and sEntiment Reasoner)**
+
+VADER is a lexicon and rule-based sentiment analysis tool specifically attuned to social media text. It's included in NLTK.
+
+### **How It Works**
+
+1. **Analyze Text** - Extract sentiment indicators
+2. **Calculate Scores**:
+   - `positive` (0-1): Proportion of positive words
+   - `neutral` (0-1): Proportion of neutral words
+   - `negative` (0-1): Proportion of negative words
+   - `compound` (-1 to 1): Overall sentiment score
+
+3. **Classify**:
+   ```python
+   if compound >= 0.05:  sentiment = "positive"
+   elif compound <= -0.05:  sentiment = "negative"
+   else:  sentiment = "neutral"
+   ```
+
+### **Example Analysis**
+
+**Review:** *"Amazing host! The location was perfect and the apartment was very clean. Highly recommend!"*
+
+```json
+{
+  "sentiment": "positive",
+  "sentiment_score": 0.9342,
+  "scores": {
+    "positive": 0.68,
+    "neutral": 0.32,
+    "negative": 0.00
+  }
+}
+```
+
+---
+
+## 📊 **Key Insights from Data**
+
+### **Top 5 Happiest Neighbourhoods** (by % positive reviews)
+
+1. **Richmond upon Thames** - 94.1% positive (avg score: 0.812)
+2. **Kingston upon Thames** - 91.6% positive (avg score: 0.776)
+3. **Havering** - 91.0% positive (avg score: 0.727)
+4. **Hounslow** - 90.2% positive (avg score: 0.743)
+5. **Hillingdon** - 89.9% positive (avg score: 0.709)
+
+### **Most Expensive Neighbourhoods** (avg price/night)
+
+1. **Tower Hamlets** - £431
+2. **City of London** - £354
+3. **Lambeth** - £346
+4. **Westminster** - £342
+5. **Kensington and Chelsea** - £336
+
+### **Most Common Positive Words**
+
+1. stay (5,698 mentions)
+2. great (5,468)
+3. london (4,901)
+4. place (4,078)
+5. room (3,404)
+6. location (3,179)
+7. clean (2,925)
+8. host (2,802)
+9. nice (2,751)
+10. lovely (2,327)
+
+### **Room Type Distribution**
+
+- Entire home/apt: 64.9%
+- Private room: 34.7%
+- Shared room: 0.2%
+- Hotel room: 0.1%
+
+---
+
+## 🧪 **Testing**
+
+### **Run Test Scripts**
+
+```bash
+# Test MongoDB connection
+python test_mongodb.py
+
+# Test sentiment analyzer
+python ml/sentiment_analyzer.py
+
+# Test data cleaning (sample)
+python test_cleaning.py
+```
+
+---
+
+## 🚧 **Roadmap / TODO**
+
+### **Phase 1: Backend (COMPLETE)** ✅
+- [x] ETL pipeline
+- [x] MongoDB integration
+- [x] Sentiment analysis
+- [x] Flask API
+- [x] Analytics endpoints
+
+### **Phase 2: Frontend (TODO)**
+- [ ] React app setup
+- [ ] Interactive Leaflet map
+- [ ] Dashboard with Recharts
+- [ ] Filters component
+- [ ] Neighbourhood comparison
+- [ ] Word cloud visualization
+
+### **Phase 3: Deployment (TODO)**
+- [ ] Docker containerization
+- [ ] Cloud deployment (AWS/Heroku)
+- [ ] CI/CD pipeline
+- [ ] API documentation (Swagger)
+
+### **Phase 4: Enhancements (TODO)**
+- [ ] Add Paris and Amsterdam data
+- [ ] User authentication
+- [ ] Saved searches
+- [ ] Email alerts for price drops
+- [ ] Advanced ML (topic modeling)
+
+---
+
+## 🤝 **Contributing**
+
+This is an educational project. Contributions, issues, and feature requests are welcome!
+
+---
+
+## 📄 **License**
+
+This project is for educational purposes as part of the Holberton School curriculum.
+
+---
+
+## 👥 **Author**
+
+**Sokol** - Solo Development Project
+- GitHub: [@your-username](https://github.com/your-username)
+
+---
+
+## 🙏 **Acknowledgments**
+
+- **Inside Airbnb** - For providing open data
+- **Holberton School** - Educational support
+- **NLTK/VADER** - Sentiment analysis tools
+- **MongoDB** - Database platform
+- **Flask** - Web framework
+
+---
+
+## 📞 **Support**
+
+For questions or issues:
+1. Check existing documentation
+2. Review API endpoint examples
+3. Test with provided curl commands
+4. Check MongoDB connection
+
+---
+
+**Built with ❤️ in Tirana, Albania - January 2026**
+</file>
+
+</files>

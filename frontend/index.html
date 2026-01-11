@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InnSight - Smart Airbnb Explorer</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <span class="logo">🏠 InnSight</span>
+                <span class="city-badge">London</span>
+            </div>
+            <div class="nav-stats">
+                <div class="stat-item">
+                    <span class="stat-value" id="totalListings">96,871</span>
+                    <span class="stat-label">Listings</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="totalReviews">2M+</span>
+                    <span class="stat-label">Reviews</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value" id="positivePercent">84.4%</span>
+                    <span class="stat-label">Positive</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Sidebar with Filters -->
+        <aside class="sidebar">
+            <div class="filter-section">
+                <h3>Filters</h3>
+                
+                <!-- Price Filter -->
+                <div class="filter-group">
+                    <label>Price Range</label>
+                    <div class="price-inputs">
+                        <input type="number" id="minPrice" placeholder="Min £" min="0">
+                        <span>-</span>
+                        <input type="number" id="maxPrice" placeholder="Max £" min="0">
+                    </div>
+                </div>
+
+                <!-- Room Type Filter -->
+                <div class="filter-group">
+                    <label>Room Type</label>
+                    <select id="roomType">
+                        <option value="">All Types</option>
+                        <option value="Entire home/apt">Entire home/apt</option>
+                        <option value="Private room">Private room</option>
+                        <option value="Shared room">Shared room</option>
+                        <option value="Hotel room">Hotel room</option>
+                    </select>
+                </div>
+
+                <!-- Neighbourhood Filter -->
+                <div class="filter-group">
+                    <label>Neighbourhood</label>
+                    <select id="neighbourhood">
+                        <option value="">All Neighbourhoods</option>
+                    </select>
+                </div>
+
+                <!-- Apply Button -->
+                <button id="applyFilters" class="btn-primary">Apply Filters</button>
+                <button id="resetFilters" class="btn-secondary">Reset</button>
+            </div>
+
+            <!-- Quick Stats -->
+            <div class="quick-stats">
+                <h3>Quick Stats</h3>
+                <div class="stat-card">
+                    <div class="stat-icon">💰</div>
+                    <div class="stat-info">
+                        <div class="stat-title">Avg Price</div>
+                        <div class="stat-number" id="avgPrice">£230</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon">😊</div>
+                    <div class="stat-info">
+                        <div class="stat-title">Sentiment</div>
+                        <div class="stat-number" id="sentimentScore">84.4%</div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Map Section -->
+            <section class="map-section">
+                <div class="section-header">
+                    <h2>📍 Interactive Map</h2>
+                    <div class="listing-count">
+                        Showing <span id="listingCount">0</span> listings
+                    </div>
+                </div>
+                <div id="map" class="map-container"></div>
+                <div class="map-legend">
+                    <h4>Price Range</h4>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #10b981;"></span>
+                        £0 - £150
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #f59e0b;"></span>
+                        £150 - £300
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #ef4444;"></span>
+                        £300+
+                    </div>
+                </div>
+            </section>
+
+            <!-- Dashboard Section -->
+            <section class="dashboard-section">
+                <h2>📊 Analytics Dashboard</h2>
+                
+                <div class="charts-grid">
+                    <!-- Price Chart -->
+                    <div class="chart-card">
+                        <h3>Price by Neighbourhood</h3>
+                        <canvas id="priceChart"></canvas>
+                    </div>
+
+                    <!-- Room Type Chart -->
+                    <div class="chart-card">
+                        <h3>Room Type Distribution</h3>
+                        <canvas id="roomTypeChart"></canvas>
+                    </div>
+
+                    <!-- Sentiment Chart -->
+                    <div class="chart-card">
+                        <h3>Sentiment Analysis</h3>
+                        <canvas id="sentimentChart"></canvas>
+                    </div>
+
+                    <!-- Top Neighbourhoods -->
+                    <div class="chart-card">
+                        <h3>Top Neighbourhoods by Sentiment</h3>
+                        <canvas id="neighbourhoodChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Word Cloud Section -->
+                <div class="wordcloud-section">
+                    <h3>☁️ Most Common Words in Reviews</h3>
+                    <div class="wordcloud-filters">
+                        <button class="wordcloud-btn active" data-sentiment="positive">
+                            😊 Positive
+                        </button>
+                        <button class="wordcloud-btn" data-sentiment="negative">
+                            😞 Negative
+                        </button>
+                        <button class="wordcloud-btn" data-sentiment="">
+                            😐 All
+                        </button>
+                    </div>
+                    <div id="wordCloud" class="wordcloud-container"></div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>Loading data...</p>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Our JS Files -->
+    <script src="js/api.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

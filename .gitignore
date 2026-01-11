@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# Data files - DON'T COMMIT LARGE CSV FILES!
+backend/data/raw/
+*.csv
+*.csv.gz
+*.geojson
+
+# Keep folder structure but not the actual data files
+!backend/data/raw/.gitkeep
+backend/data/processed/*
+!backend/data/processed/.gitkeep
+
+# MongoDB
+mongodb_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Node/React
+node_modules/
+build/
+dist/
+.npm
+.eslintcache
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ML models
+backend/ml/models/*.pkl
+backend/ml/models/*.h5
+!backend/ml/models/.gitkeep
