@@ -1,10 +1,11 @@
 /**
- * Main Application - Orchestrates everything
- * Uses ES6 features: async/await, arrow functions, template literals
+ * Main Application - Neighbourhood-Specific Analytics
  */
 
 const App = {
     currentFilters: {},
+    currentNeighbourhood: null,
+    allListings: [],
     
     /**
      * Initialize the application
@@ -13,7 +14,6 @@ const App = {
         console.log('InnSight Application Starting...');
         
         try {
-            // Show loading
             this.showLoading();
             
             // Initialize map
@@ -22,16 +22,15 @@ const App = {
             // Load neighbourhoods into dropdown
             await this.loadNeighbourhoods();
             
-            // Load initial data
+            // Load initial data (all London)
             await this.loadData();
             
-            // Initialize charts
+            // Initialize charts with all London data
             await Charts.initAll();
             
             // Set up event listeners
             this.setupEventListeners();
             
-            // Hide loading
             this.hideLoading();
             
             console.log('Application initialized successfully!');
@@ -62,7 +61,7 @@ const App = {
     },
 
     /**
-     * Load listings data
+     * Load and filter listings data
      */
     async loadData(filters = {}) {
         try {
@@ -70,16 +69,24 @@ const App = {
             
             // Fetch listings
             const listingsData = await API.getListings(filters);
-            const listings = listingsData.listings || [];
+            this.allListings = listingsData.listings || [];
             
             // Update listing count
-            document.getElementById('listingCount').textContent = listings.length.toLocaleString();
+            document.getElementById('listingCount').textContent = this.allListings.length.toLocaleString();
             
             // Add to map
-            MapComponent.addListings(listings);
+            MapComponent.addListings(this.allListings);
             
-            // Update stats
-            await this.updateStats();
+            // If neighbourhood is selected, zoom to it
+            if (filters.neighbourhood) {
+                MapComponent.zoomToNeighbourhood(this.allListings);
+            }
+            
+            // Update stats based on filtered data
+            await this.updateStats(this.allListings, filters.neighbourhood);
+            
+            // Update all charts
+            await Charts.updateAll(filters.neighbourhood);
             
             this.hideLoading();
         } catch (error) {
@@ -89,18 +96,35 @@ const App = {
     },
 
     /**
-     * Update quick stats
+     * Update quick stats based on current listings
      */
-    async updateStats() {
+    async updateStats(listings, neighbourhood = null) {
         try {
-            // Get price stats
-            const priceData = await API.getPriceStats();
-            const avgPrice = priceData.overall.avg_price;
-            document.getElementById('avgPrice').textContent = `£${Math.round(avgPrice)}`;
+            if (listings && listings.length > 0) {
+                // Calculate average price from current listings
+                const prices = listings.filter(l => l.price).map(l => l.price);
+                const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+                document.getElementById('avgPrice').textContent = `£${Math.round(avgPrice)}`;
+            } else {
+                document.getElementById('avgPrice').textContent = '£--';
+            }
             
-            // Get sentiment stats
-            const sentimentData = await API.getSentiment();
-            const positivePct = sentimentData.sentiment.positive.percentage;
+            // Get sentiment for neighbourhood or all London
+            const sentimentData = neighbourhood 
+                ? await API.getSentimentByNeighbourhood(neighbourhood)
+                : await API.getSentiment();
+            
+            let positivePct;
+            if (neighbourhood && sentimentData.length > 0) {
+                // Find specific neighbourhood
+                const nbData = sentimentData.find(n => n.neighbourhood === neighbourhood);
+                positivePct = nbData ? nbData.positive_pct : 0;
+            } else if (!neighbourhood && sentimentData.sentiment) {
+                positivePct = sentimentData.sentiment.positive.percentage;
+            } else {
+                positivePct = 0;
+            }
+            
             document.getElementById('sentimentScore').textContent = `${positivePct.toFixed(1)}%`;
             
         } catch (error) {
@@ -122,23 +146,13 @@ const App = {
             this.resetFilters();
         });
         
-        // Word cloud filter buttons
-        document.querySelectorAll('.wordcloud-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                // Remove active class from all buttons
-                document.querySelectorAll('.wordcloud-btn').forEach(b => {
-                    b.classList.remove('active');
-                });
-                
-                // Add active class to clicked button
-                e.target.classList.add('active');
-                
-                // Get sentiment
-                const sentiment = e.target.dataset.sentiment;
-                
-                // Update word cloud
-                Charts.createWordCloud(sentiment || null);
-            });
+        // Neighbourhood dropdown change
+        document.getElementById('neighbourhood').addEventListener('change', (e) => {
+            const neighbourhood = e.target.value;
+            this.currentNeighbourhood = neighbourhood || null;
+            
+            // Auto-apply when neighbourhood changes
+            this.applyFilters();
         });
         
         // Enter key on inputs
@@ -152,7 +166,7 @@ const App = {
     },
 
     /**
-     * Apply filters
+     * Apply filters and update everything
      */
     async applyFilters() {
         const filters = {
@@ -160,7 +174,7 @@ const App = {
             maxPrice: document.getElementById('maxPrice').value,
             roomType: document.getElementById('roomType').value,
             neighbourhood: document.getElementById('neighbourhood').value,
-            limit: 1000
+            limit: 5000
         };
         
         // Remove empty filters
@@ -169,11 +183,13 @@ const App = {
         });
         
         this.currentFilters = filters;
+        this.currentNeighbourhood = filters.neighbourhood || null;
+        
         await this.loadData(filters);
     },
 
     /**
-     * Reset filters
+     * Reset all filters
      */
     async resetFilters() {
         document.getElementById('minPrice').value = '';
@@ -182,6 +198,8 @@ const App = {
         document.getElementById('neighbourhood').value = '';
         
         this.currentFilters = {};
+        this.currentNeighbourhood = null;
+        
         await this.loadData();
     },
 

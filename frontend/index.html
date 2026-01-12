@@ -46,6 +46,14 @@
             <div class="filter-section">
                 <h3>Filters</h3>
                 
+                <!-- Neighbourhood Filter (Most Important) -->
+                <div class="filter-group">
+                    <label>Neighbourhood</label>
+                    <select id="neighbourhood">
+                        <option value="">All Neighbourhoods</option>
+                    </select>
+                </div>
+                
                 <!-- Price Filter -->
                 <div class="filter-group">
                     <label>Price Range</label>
@@ -68,20 +76,12 @@
                     </select>
                 </div>
 
-                <!-- Neighbourhood Filter -->
-                <div class="filter-group">
-                    <label>Neighbourhood</label>
-                    <select id="neighbourhood">
-                        <option value="">All Neighbourhoods</option>
-                    </select>
-                </div>
-
                 <!-- Apply Button -->
                 <button id="applyFilters" class="btn-primary">Apply Filters</button>
                 <button id="resetFilters" class="btn-secondary">Reset</button>
             </div>
 
-            <!-- Quick Stats -->
+            <!-- Quick Stats (Dynamic) -->
             <div class="quick-stats">
                 <h3>Quick Stats</h3>
                 <div class="stat-card">
@@ -94,7 +94,7 @@
                 <div class="stat-card">
                     <div class="stat-icon">😊</div>
                     <div class="stat-info">
-                        <div class="stat-title">Sentiment</div>
+                        <div class="stat-title">Positive Reviews</div>
                         <div class="stat-number" id="sentimentScore">84.4%</div>
                     </div>
                 </div>
@@ -132,48 +132,30 @@
             <!-- Dashboard Section -->
             <section class="dashboard-section">
                 <h2>📊 Analytics Dashboard</h2>
+                <p style="color: #6b7280; margin-bottom: 1.5rem; font-size: 0.875rem;">
+                    Select a neighbourhood to see specific analytics, or view all London data.
+                </p>
                 
                 <div class="charts-grid">
                     <!-- Price Chart -->
                     <div class="chart-card">
-                        <h3>Price by Neighbourhood</h3>
                         <canvas id="priceChart"></canvas>
                     </div>
 
                     <!-- Room Type Chart -->
                     <div class="chart-card">
-                        <h3>Room Type Distribution</h3>
                         <canvas id="roomTypeChart"></canvas>
                     </div>
 
                     <!-- Sentiment Chart -->
                     <div class="chart-card">
-                        <h3>Sentiment Analysis</h3>
                         <canvas id="sentimentChart"></canvas>
                     </div>
 
-                    <!-- Top Neighbourhoods -->
+                    <!-- Occupancy Chart (NEW) -->
                     <div class="chart-card">
-                        <h3>Top Neighbourhoods by Sentiment</h3>
-                        <canvas id="neighbourhoodChart"></canvas>
+                        <canvas id="occupancyChart"></canvas>
                     </div>
-                </div>
-
-                <!-- Word Cloud Section -->
-                <div class="wordcloud-section">
-                    <h3>☁️ Most Common Words in Reviews</h3>
-                    <div class="wordcloud-filters">
-                        <button class="wordcloud-btn active" data-sentiment="positive">
-                            😊 Positive
-                        </button>
-                        <button class="wordcloud-btn" data-sentiment="negative">
-                            😞 Negative
-                        </button>
-                        <button class="wordcloud-btn" data-sentiment="">
-                            😐 All
-                        </button>
-                    </div>
-                    <div id="wordCloud" class="wordcloud-container"></div>
                 </div>
             </section>
         </main>

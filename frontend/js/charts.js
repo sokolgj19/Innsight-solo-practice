@@ -1,26 +1,53 @@
 /**
- * Charts Component - Chart.js visualizations
+ * Charts Component - Neighbourhood-Specific Visualizations
  */
 
 const Charts = {
     priceChart: null,
     roomTypeChart: null,
     sentimentChart: null,
-    neighbourhoodChart: null,
+    occupancyChart: null,
+
+    /**
+     * Update all charts for specific neighbourhood or all London
+     */
+    async updateAll(neighbourhood = null) {
+        const title = neighbourhood ? neighbourhood : 'All London';
+        console.log(`Updating charts for: ${title}`);
+        
+        await Promise.all([
+            this.createPriceChart(neighbourhood),
+            this.createRoomTypeChart(neighbourhood),
+            this.createSentimentChart(neighbourhood),
+            this.createOccupancyChart(neighbourhood)
+        ]);
+    },
 
     /**
      * Create price by neighbourhood chart
      */
-    async createPriceChart() {
+    async createPriceChart(selectedNeighbourhood = null) {
         try {
             const data = await API.getPriceStats();
-            const neighbourhoods = data.by_neighbourhood.slice(0, 10); // Top 10
+            
+            let neighbourhoods;
+            if (selectedNeighbourhood) {
+                // Show just the selected neighbourhood
+                neighbourhoods = data.by_neighbourhood.filter(n => n._id === selectedNeighbourhood);
+            } else {
+                // Show top 10
+                neighbourhoods = data.by_neighbourhood.slice(0, 10);
+            }
             
             const ctx = document.getElementById('priceChart').getContext('2d');
             
             if (this.priceChart) {
                 this.priceChart.destroy();
             }
+            
+            const chartTitle = selectedNeighbourhood 
+                ? `Average Price: ${selectedNeighbourhood}`
+                : 'Top 10 Neighbourhoods by Price';
             
             this.priceChart = new Chart(ctx, {
                 type: 'bar',
@@ -29,8 +56,8 @@ const Charts = {
                     datasets: [{
                         label: 'Average Price (£)',
                         data: neighbourhoods.map(n => n.avg_price.toFixed(2)),
-                        backgroundColor: '#2563eb',
-                        borderColor: '#1d4ed8',
+                        backgroundColor: selectedNeighbourhood ? '#10b981' : '#2563eb',
+                        borderColor: selectedNeighbourhood ? '#059669' : '#1d4ed8',
                         borderWidth: 1
                     }]
                 },
@@ -38,6 +65,10 @@ const Charts = {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle
+                        },
                         legend: { display: false }
                     },
                     scales: {
@@ -57,17 +88,21 @@ const Charts = {
     },
 
     /**
-     * Create room type distribution chart
+     * Create room type distribution chart (neighbourhood-specific)
      */
-    async createRoomTypeChart() {
+    async createRoomTypeChart(neighbourhood = null) {
         try {
-            const data = await API.getRoomTypeDistribution();
+            const data = await API.getRoomTypeDistribution(neighbourhood);
             
             const ctx = document.getElementById('roomTypeChart').getContext('2d');
             
             if (this.roomTypeChart) {
                 this.roomTypeChart.destroy();
             }
+            
+            const chartTitle = neighbourhood 
+                ? `Room Types: ${neighbourhood}`
+                : 'Room Type Distribution (All London)';
             
             this.roomTypeChart = new Chart(ctx, {
                 type: 'pie',
@@ -87,6 +122,10 @@ const Charts = {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle
+                        },
                         legend: {
                             position: 'bottom'
                         }
@@ -99,12 +138,32 @@ const Charts = {
     },
 
     /**
-     * Create sentiment chart
+     * Create sentiment chart (neighbourhood-specific)
      */
-    async createSentimentChart() {
+    async createSentimentChart(neighbourhood = null) {
         try {
-            const data = await API.getSentiment();
-            const sentiment = data.sentiment;
+            let sentimentData;
+            
+            if (neighbourhood) {
+                const nbData = await API.getSentimentByNeighbourhood(neighbourhood);
+                if (nbData.length > 0) {
+                    const data = nbData[0];
+                    sentimentData = {
+                        positive: { count: data.positive },
+                        neutral: { count: data.neutral },
+                        negative: { count: data.negative }
+                    };
+                } else {
+                    sentimentData = {
+                        positive: { count: 0 },
+                        neutral: { count: 0 },
+                        negative: { count: 0 }
+                    };
+                }
+            } else {
+                const data = await API.getSentiment();
+                sentimentData = data.sentiment;
+            }
             
             const ctx = document.getElementById('sentimentChart').getContext('2d');
             
@@ -112,15 +171,19 @@ const Charts = {
                 this.sentimentChart.destroy();
             }
             
+            const chartTitle = neighbourhood 
+                ? `Sentiment: ${neighbourhood}`
+                : 'Sentiment Analysis (All London)';
+            
             this.sentimentChart = new Chart(ctx, {
                 type: 'doughnut',
                 data: {
                     labels: ['Positive', 'Neutral', 'Negative'],
                     datasets: [{
                         data: [
-                            sentiment.positive.count,
-                            sentiment.neutral.count,
-                            sentiment.negative.count
+                            sentimentData.positive.count,
+                            sentimentData.neutral.count,
+                            sentimentData.negative.count
                         ],
                         backgroundColor: [
                             '#10b981',
@@ -133,6 +196,10 @@ const Charts = {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle
+                        },
                         legend: {
                             position: 'bottom'
                         }
@@ -145,26 +212,29 @@ const Charts = {
     },
 
     /**
-     * Create top neighbourhoods by sentiment chart
+     * Create monthly occupancy chart (bar chart with 12 months)
      */
-    async createNeighbourhoodChart() {
+    async createOccupancyChart(neighbourhood = null) {
         try {
-            const data = await API.getSentimentByNeighbourhood();
-            const topNeighbourhoods = data.slice(0, 10);
+            const data = await API.getOccupancy(neighbourhood);
             
-            const ctx = document.getElementById('neighbourhoodChart').getContext('2d');
+            const ctx = document.getElementById('occupancyChart').getContext('2d');
             
-            if (this.neighbourhoodChart) {
-                this.neighbourhoodChart.destroy();
+            if (this.occupancyChart) {
+                this.occupancyChart.destroy();
             }
             
-            this.neighbourhoodChart = new Chart(ctx, {
+            const chartTitle = neighbourhood 
+                ? `Occupancy by Month: ${neighbourhood}`
+                : 'Occupancy by Month (All London)';
+            
+            this.occupancyChart = new Chart(ctx, {
                 type: 'bar',
                 data: {
-                    labels: topNeighbourhoods.map(n => n.neighbourhood),
+                    labels: data.by_month.map(m => m.month || m._id),
                     datasets: [{
-                        label: 'Positive %',
-                        data: topNeighbourhoods.map(n => n.positive_pct),
+                        label: 'Occupancy Rate (%)',
+                        data: data.by_month.map(m => m.occupancy_rate.toFixed(1)),
                         backgroundColor: '#10b981',
                         borderColor: '#059669',
                         borderWidth: 1
@@ -173,81 +243,40 @@ const Charts = {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    indexAxis: 'y',
                     plugins: {
+                        title: {
+                            display: true,
+                            text: chartTitle
+                        },
                         legend: { display: false }
                     },
                     scales: {
-                        x: {
+                        y: {
                             beginAtZero: true,
                             max: 100,
                             title: {
                                 display: true,
-                                text: 'Positive Reviews (%)'
+                                text: 'Occupancy Rate (%)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Month'
                             }
                         }
                     }
                 }
             });
         } catch (error) {
-            console.error('Error creating neighbourhood chart:', error);
+            console.error('Error creating occupancy chart:', error);
         }
     },
 
     /**
-     * Create word cloud visualization
-     */
-    async createWordCloud(sentiment = 'positive') {
-        try {
-            const words = await API.getWordCloud(sentiment, 30);
-            const container = document.getElementById('wordCloud');
-            
-            // Clear existing content
-            container.innerHTML = '';
-            
-            if (words.length === 0) {
-                container.innerHTML = '<p style="color: #6b7280;">No word data available</p>';
-                return;
-            }
-            
-            // Find max count for scaling
-            const maxCount = Math.max(...words.map(w => w.count));
-            
-            // Create word elements
-            words.forEach(word => {
-                const wordEl = document.createElement('div');
-                wordEl.className = 'word-item';
-                
-                // Scale font size based on frequency
-                const fontSize = 0.75 + (word.count / maxCount) * 1.5;
-                wordEl.style.fontSize = `${fontSize}rem`;
-                
-                // Color based on sentiment
-                let color = '#2563eb';
-                if (sentiment === 'positive') color = '#10b981';
-                if (sentiment === 'negative') color = '#ef4444';
-                wordEl.style.color = color;
-                
-                wordEl.textContent = word.word;
-                wordEl.title = `${word.word}: ${word.count} mentions`;
-                
-                container.appendChild(wordEl);
-            });
-        } catch (error) {
-            console.error('Error creating word cloud:', error);
-        }
-    },
-
-    /**
-     * Initialize all charts
+     * Initialize all charts (first load)
      */
     async initAll() {
-        await Promise.all([
-            this.createPriceChart(),
-            this.createRoomTypeChart(),
-            this.createSentimentChart(),
-            this.createNeighbourhoodChart(),
-            this.createWordCloud('positive')
-        ]);
+        await this.updateAll(null);
     }
 };

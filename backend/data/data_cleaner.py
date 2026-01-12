@@ -1,5 +1,5 @@
 """
-Data cleaning module for processing raw CSV files
+Data cleaning module with language detection for English-only reviews
 """
 
 import pandas as pd
@@ -16,8 +16,36 @@ from .utils import (
     log_data_summary
 )
 
+# For language detection
+try:
+    from langdetect import detect, LangDetectException
+except ImportError:
+    print("Installing langdetect...")
+    import subprocess
+    subprocess.check_call(['pip', 'install', 'langdetect'])
+    from langdetect import detect, LangDetectException
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def is_english(text):
+    """
+    Check if text is in English.
+    
+    Args:
+        text: Text to check
+    
+    Returns:
+        True if English, False otherwise
+    """
+    if not text or len(str(text).strip()) < 10:
+        return False
+    
+    try:
+        return detect(str(text)) == 'en'
+    except LangDetectException:
+        return False
 
 
 class DataCleaner:
@@ -34,7 +62,7 @@ class DataCleaner:
     
     def clean_listings(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Clean listings data.
+        Clean listings data and handle null prices.
         
         Args:
             df: Raw listings DataFrame
@@ -54,6 +82,27 @@ class DataCleaner:
         # Clean price
         if 'price' in df.columns:
             df['price'] = df['price'].apply(clean_price)
+            
+            # Calculate neighbourhood averages for null prices
+            if df['price'].isna().any():
+                logger.info("Handling null prices by setting to neighbourhood average...")
+                
+                # Calculate average price per neighbourhood
+                neighbourhood_avg = df.groupby('neighbourhood_cleansed')['price'].mean()
+                
+                # Fill null prices with neighbourhood average
+                def fill_null_price(row):
+                    if pd.isna(row['price']) and row['neighbourhood_cleansed'] in neighbourhood_avg:
+                        return neighbourhood_avg[row['neighbourhood_cleansed']]
+                    return row['price']
+                
+                df['price'] = df.apply(fill_null_price, axis=1)
+                
+                # If still null (neighbourhood had no prices), use city average
+                city_avg = df['price'].mean()
+                df['price'] = df['price'].fillna(city_avg)
+                
+                logger.info(f"  Filled null prices with averages")
         
         # Clean host response rate
         if 'host_response_rate' in df.columns:
@@ -107,15 +156,17 @@ class DataCleaner:
     
     def clean_reviews(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Clean reviews data.
+        Clean reviews data and filter for English-only reviews.
         
         Args:
             df: Raw reviews DataFrame
             
         Returns:
-            Cleaned reviews DataFrame
+            Cleaned reviews DataFrame (English only)
         """
         logger.info(f"Cleaning {self.city_name} reviews data...")
+        
+        initial_count = len(df)
         
         # Select only required columns
         available_cols = [col for col in REVIEWS_COLUMNS if col in df.columns]
@@ -141,6 +192,16 @@ class DataCleaner:
             # Remove rows with empty comments after cleaning
             df = df[df['comments'].notna()]
             df = df[df['comments'].str.len() >= 10]  # Minimum 10 characters
+            
+            # Filter for English-only reviews
+            logger.info("  Filtering for English-only reviews (this may take a few minutes)...")
+            df['is_english'] = df['comments'].apply(is_english)
+            df = df[df['is_english'] == True]
+            df = df.drop('is_english', axis=1)
+            
+            english_count = len(df)
+            removed = initial_count - english_count
+            logger.info(f"  Kept {english_count:,} English reviews, removed {removed:,} non-English")
         
         # Clean reviewer name
         if 'reviewer_name' in df.columns:
@@ -153,7 +214,7 @@ class DataCleaner:
         if 'date' in df.columns:
             df = df.sort_values('date')
         
-        log_data_summary(df, f"{self.city_name.title()} Cleaned Reviews")
+        log_data_summary(df, f"{self.city_name.title()} Cleaned Reviews (English Only)")
         logger.info("Reviews cleaning complete")
         
         return df

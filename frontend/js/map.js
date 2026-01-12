@@ -1,5 +1,5 @@
 /**
- * Map Component - Leaflet map with listings
+ * Map Component - Leaflet map with auto-zoom and filtered listings
  */
 
 let map = null;
@@ -29,7 +29,10 @@ const MapComponent = {
      * Get marker color based on price
      */
     getMarkerColor(price) {
-        if (!price || price === null) return '#9ca3af'; // gray
+        if (!price || price === null || price === 0) {
+            // This shouldn't happen anymore since we fill null prices
+            return '#9ca3af'; // gray fallback
+        }
         if (price > 300) return '#ef4444'; // red
         if (price > 150) return '#f59e0b'; // orange
         return '#10b981'; // green
@@ -59,7 +62,7 @@ const MapComponent = {
     },
 
     /**
-     * Add listings to map
+     * Add listings to map (no grey dots - all have prices now)
      */
     addListings(listings) {
         // Clear existing markers
@@ -70,10 +73,19 @@ const MapComponent = {
             return;
         }
         
+        // Filter out any listings without coordinates or price
+        const validListings = listings.filter(l => 
+            l.latitude && 
+            l.longitude && 
+            l.price !== null && 
+            l.price !== undefined &&
+            l.price > 0
+        );
+        
+        console.log(`Displaying ${validListings.length} valid listings (filtered out ${listings.length - validListings.length} without price/coords)`);
+        
         // Add markers for each listing
-        listings.forEach(listing => {
-            if (!listing.latitude || !listing.longitude) return;
-            
+        validListings.forEach(listing => {
             const marker = L.marker(
                 [listing.latitude, listing.longitude],
                 { icon: this.createMarkerIcon(listing.price) }
@@ -107,7 +119,38 @@ const MapComponent = {
             marker.addTo(markersLayer);
         });
         
-        console.log(`Added ${listings.length} markers to map`);
+        console.log(`Added ${validListings.length} markers to map`);
+    },
+
+    /**
+     * Zoom map to fit neighbourhood bounds
+     */
+    zoomToNeighbourhood(listings) {
+        if (!listings || listings.length === 0) {
+            console.log('No listings to zoom to');
+            return;
+        }
+        
+        // Get valid coordinates
+        const coords = listings
+            .filter(l => l.latitude && l.longitude)
+            .map(l => [l.latitude, l.longitude]);
+        
+        if (coords.length === 0) {
+            console.log('No valid coordinates for zoom');
+            return;
+        }
+        
+        // Create bounds from coordinates
+        const bounds = L.latLngBounds(coords);
+        
+        // Fit map to bounds with padding
+        map.fitBounds(bounds, {
+            padding: [50, 50],
+            maxZoom: 14
+        });
+        
+        console.log(`Zoomed to neighbourhood with ${coords.length} listings`);
     },
 
     /**
@@ -117,5 +160,12 @@ const MapComponent = {
         if (markersLayer) {
             markersLayer.clearLayers();
         }
+    },
+    
+    /**
+     * Reset map view to London
+     */
+    resetView() {
+        map.setView([51.5074, -0.1278], 11);
     }
 };
